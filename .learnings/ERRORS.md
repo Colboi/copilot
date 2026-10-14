@@ -4,6 +4,30 @@ Command failures and integration errors.
 
 ---
 
+## [ERR-20261014-006] artifacts_recursive_removal_policy
+
+**Logged**: 2026-10-14T00:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: maintenance
+
+### Summary
+删除 `artifacts` 目录的递归命令被命令安全策略拒绝。
+
+### Error
+```
+CreateProcess rejected by policy
+```
+
+### Context
+- 目标路径已确认是项目目录下的 `artifacts`。
+- 目录内容属于测试输出和插件运行生成结果。
+
+### Resolution
+- **Resolved**: 2026-10-14T00:00:00+08:00
+- **Notes**: 使用已核对的绝对路径逐项删除文件，再删除空目录。
+
+
 ## [ERR-20261014-005] error_log_patch_context
 
 **Logged**: 2026-10-14

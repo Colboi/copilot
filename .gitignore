@@ -7,8 +7,7 @@ backend/__pycache__/
 backend/*.pyc
 plugins/*
 !plugins/__init__.py
-artifacts/.verification/
-artifacts/dmm/
+artifacts/
 backend/build/
 backend/dist/
 *.pyc

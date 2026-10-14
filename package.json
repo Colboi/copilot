@@ -1,0 +1,22 @@
+{
+  "name": "colpilot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1 --port 1420",
+    "build": "vite build",
+    "build:client": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-client.ps1",
+    "tauri": "tauri"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.12.1",
+    "@tauri-apps/plugin-dialog": "^2.8.2",
+    "vue": "3.5.43"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.1",
+    "@vitejs/plugin-vue": "6.0.9",
+    "vite": "8.3.2"
+  }
+}

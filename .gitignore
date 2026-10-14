@@ -1,0 +1,14 @@
+node_modules/
+dist/
+target/
+.venv/
+src-tauri/target/
+backend/__pycache__/
+backend/*.pyc
+plugins/*
+!plugins/__init__.py
+artifacts/.verification/
+artifacts/dmm/
+backend/build/
+backend/dist/
+*.pyc

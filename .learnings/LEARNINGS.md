@@ -803,3 +803,30 @@ Colpilot 程序名和设置入口需要固定放在左侧栏顶部，插件导�
 ### Resolution
 - **Resolved**: 2026-10-16
 - **Notes**: 已完成插入空隙状态、空隙高亮和插入位置排序保存，并通过回归检查、Vite 构建和完整桌面客户端构建验证。
+
+---
+
+## [LRN-20261016-010] keep_local_plugin_out_of_main_sync
+
+**Logged**: 2026-10-16
+**Priority**: high
+**Status**: resolved
+**Area**: infra
+
+### Summary
+用户要求取消 `colmon` 与 Colpilot 主仓库同步，同时保留本地插件目录。
+
+### Details
+插件目录可以通过根目录 `.gitignore` 保持本地状态，同时从 Git 索引移除。构建脚本需要根据本地插件目录是否存在来处理对应的原生宿主文件，这样远程仓库可以独立构建，本地开发目录仍然可以继续构建和使用 `colmon`。
+
+### Suggested Action
+对于仅供本地使用的插件，提交前检查 Git 索引、远程目录和本地文件路径，并让构建流程支持插件目录缺失的情况。
+
+### Metadata
+- **Source**: user_feedback | verified_diagnostic
+- **Related Files**: .gitignore, scripts/build-client.ps1, plugins/colmon
+- **Tags**: git, plugin, local-only, packaging
+
+### Resolution
+- **Resolved**: 2026-10-16
+- **Notes**: 已从 Colpilot 主仓库提交和远程分支移除 `colmon`，本地目录仍然存在并由忽略规则保护；构建脚本已支持本地目录存在与缺失两种情况。

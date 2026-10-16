@@ -10,6 +10,7 @@ $pluginSourceRoot = Join-Path $projectRoot 'plugins'
 $colmonNativeProject = Join-Path $projectRoot 'plugins\colmon\native\ColpilotColmonWindows.csproj'
 $colmonNativePublishRoot = Join-Path $projectRoot 'artifacts\colmon-native-publish'
 $colmonNativeExecutable = Join-Path $colmonNativePublishRoot 'ColpilotColmonWindows.exe'
+$hasLocalColmon = Test-Path -LiteralPath $colmonNativeProject -PathType Leaf
 $pluginSourceDirectories = @(
     Get-ChildItem -LiteralPath $pluginSourceRoot -Directory |
         Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'manifest.json') }
@@ -77,9 +78,11 @@ $portableSources = @(
     $venvSitePackages,
     $portableLibraryDllSources,
     $pluginPackageInitSource,
-    $colmonNativeProject,
     $pluginSourceDirectories.FullName
 )
+if ($hasLocalColmon) {
+    $portableSources += $colmonNativeProject
+}
 
 foreach ($sourcePath in @($artifactSources + $portableSources)) {
     if (-not (Test-Path -LiteralPath $sourcePath)) {
@@ -87,23 +90,25 @@ foreach ($sourcePath in @($artifactSources + $portableSources)) {
     }
 }
 
-if (Test-Path -LiteralPath $colmonNativePublishRoot) {
-    Remove-Item -LiteralPath $colmonNativePublishRoot -Recurse -Force
-}
-New-Item -ItemType Directory -Path $colmonNativePublishRoot -Force | Out-Null
-& dotnet publish $colmonNativeProject `
-    -c Release `
-    -r win-x64 `
-    --self-contained true `
-    -p:PublishSingleFile=true `
-    -p:IncludeNativeLibrariesForSelfExtract=true `
-    -o $colmonNativePublishRoot `
-    --nologo
-if ($LASTEXITCODE -ne 0) {
-    throw "colmon 原生窗口宿主构建失败，退出代码为 $LASTEXITCODE"
-}
-if (-not (Test-Path -LiteralPath $colmonNativeExecutable -PathType Leaf)) {
-    throw "colmon 原生窗口宿主文件不存在：$colmonNativeExecutable"
+if ($hasLocalColmon) {
+    if (Test-Path -LiteralPath $colmonNativePublishRoot) {
+        Remove-Item -LiteralPath $colmonNativePublishRoot -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $colmonNativePublishRoot -Force | Out-Null
+    & dotnet publish $colmonNativeProject `
+        -c Release `
+        -r win-x64 `
+        --self-contained true `
+        -p:PublishSingleFile=true `
+        -p:IncludeNativeLibrariesForSelfExtract=true `
+        -o $colmonNativePublishRoot `
+        --nologo
+    if ($LASTEXITCODE -ne 0) {
+        throw "colmon 原生窗口宿主构建失败，退出代码为 $LASTEXITCODE"
+    }
+    if (-not (Test-Path -LiteralPath $colmonNativeExecutable -PathType Leaf)) {
+        throw "colmon 原生窗口宿主文件不存在：$colmonNativeExecutable"
+    }
 }
 
 if (Test-Path -LiteralPath $outputRoot) {
@@ -185,11 +190,13 @@ foreach ($pluginSourceDirectory in $pluginSourceDirectories) {
         -DestinationPath (Join-Path $portablePluginsRoot $pluginSourceDirectory.Name)
 }
 
-$portableColmonNativeRoot = Join-Path $portablePluginsRoot 'colmon\native'
-New-Item -ItemType Directory -Path $portableColmonNativeRoot -Force | Out-Null
-Copy-Item -LiteralPath $colmonNativeExecutable `
-    -Destination (Join-Path $portableColmonNativeRoot 'ColpilotColmonWindows.exe') `
-    -Force
+if ($hasLocalColmon) {
+    $portableColmonNativeRoot = Join-Path $portablePluginsRoot 'colmon\native'
+    New-Item -ItemType Directory -Path $portableColmonNativeRoot -Force | Out-Null
+    Copy-Item -LiteralPath $colmonNativeExecutable `
+        -Destination (Join-Path $portableColmonNativeRoot 'ColpilotColmonWindows.exe') `
+        -Force
+}
 
 $portablePythonCacheDirectories = @(
     Get-ChildItem -LiteralPath $portableRuntimeRoot -Directory -Recurse -Force -Filter '__pycache__' |

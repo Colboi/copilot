@@ -1,94 +1,83 @@
 # Colpilot
 
-Colpilot 是一个 Windows 桌面插件宿主和仪表盘，使用 Vue、Tauri、FastAPI 与本地 Python 运行环境。程序提供统一的插件卡片、插件生命周期管理、插件进程管理、程序级配置保存和本地 HTTP 接口。
+Colpilot 是 Windows 桌面工具的统一工作台。程序会读取当前程序目录提供的插件，显示插件卡片，并负责插件的启用、停用、排序、配置保存和运行进程管理。
 
-当前项目不预装任何插件。全新项目目录中的 plugins 目录只包含插件包初始化文件；没有插件清单时，程序不会显示插件卡片。每个插件的功能、使用条件、外部服务、安装步骤、配置项、运行文件和故障处理说明，都写在对应插件目录的 README.md 中。
+## 开始使用
 
-## 开发环境
+1. 下载 Colpilot portable 压缩包。
+2. 将压缩包解压到一个具有写入权限的目录。
+3. 保留 colpilot.exe 和同级目录的完整结构。
+4. 双击 colpilot.exe 启动程序。
 
-安装以下工具：
+程序启动后会打开工作台，并在后台启动本地服务。首次保存程序设置或插件设置时，程序会在对应目录创建配置文件。
 
-- Node.js 22 或更高版本
-- Python 3.12 或更高版本
-- Rust stable 工具链
-- Windows WebView2 Runtime
+## 主界面
 
-## 安装依赖
+### 左侧导航
 
-~~~powershell
-python -m venv .venv
-.\\.venv\\Scripts\\python.exe -m pip install -r backend\\requirements.txt
-npm install
-~~~
+左侧顶部显示 Colpilot 程序名称。插件管理区域会显示当前可以使用的插件：
 
-## 放置插件
+- 点击插件名称，右侧页面会滚动到对应插件卡片。
+- 按住鼠标左键拖动插件，可以调整插件顺序。
+- 拖动时，插件之间的空隙会显示当前位置。
+- 调整后的顺序会保存，并应用于左侧导航和右侧卡片。
 
-将插件目录放在 plugins\\<plugin-id> 中。插件目录需要提供 manifest.json、后端入口和前端组件；具体文件结构、依赖、配置项和使用步骤以该目录中的 README.md 为准。
+持续运行的插件会在名称右侧显示运行状态。状态颜色和具体含义以插件页面显示内容为准。
 
-插件需要在启动开发服务或构建客户端之前放入 plugins 目录。程序启动时会读取每个插件的 manifest.json，并按照清单加载后端实现。前端组件会在 Vite 构建时读取，已经生成的 portable 客户端不会在运行时加载后来加入的前端组件。
+### 插件卡片
 
-## 启动程序
+右侧仪表盘会显示所有已经加载的插件卡片。每张卡片包含插件名称、功能说明、插件页面和启用状态。
 
-~~~powershell
-npm run tauri dev
-~~~
+点击卡片底部的按钮可以启用或停用插件。停用插件后，插件页面会停止提供对应功能；重新启用后，插件会按照自己的运行方式恢复。
 
-启动后，Tauri 会创建桌面窗口、任务栏图标和右键菜单，同时在后台启动本地 FastAPI 服务。Python 服务不会创建命令提示符窗口。
+## 插件说明
 
-程序启动时会显示前端工作台。单击任务栏托盘图标会显示并聚焦工作台；关闭窗口时程序会回到托盘，右键菜单提供退出功能。点击退出后，Tauri 会向 Python 服务发送 exit 指令，随后结束本地服务、插件进程和桌面程序。
+每个插件目录都包含自己的 README.md。插件专属说明包括：
 
-## 生成客户端
+- 插件功能和使用条件
+- 账号、密码或其他配置要求
+- 外部服务和网络要求
+- 配置文件位置
+- 运行文件和后台进程
+- 插件专属操作与故障处理
 
-~~~powershell
-npm run build:client
-~~~
+使用或安装某个插件前，请阅读该插件目录中的 README.md。插件卡片的具体功能由插件自身决定，Colpilot 负责提供统一的显示、配置保存和进程管理。
 
-构建完成后，portable 客户端目录位于 target：
+## 配置文件
 
-- target\\colpilot.exe
-- target\\backend\\main.py、requirements.txt
-- target\\runtime：独立 Python 运行目录、标准库、扩展模块和后端依赖
-- target\\plugins\\<plugin-id>：构建时存在于本地 plugins 目录中的插件文件
+程序级配置保存在程序目录的 config.ini 中，主要记录：
 
-构建时本地没有插件目录时，客户端不会包含任何插件。将 target 目录整体复制到其他目录后，程序会优先读取其中的后端文件、Python 运行目录和插件文件。
+- 插件启用状态
+- 插件显示顺序
 
-程序级设置首次保存时，会在 colpilot.exe 所在目录创建 config.ini；插件设置首次保存时，会在对应的 plugins\\<plugin-id> 目录创建 config.ini。构建脚本和 portable 输出不会包含这些配置文件，portable 应用压缩包解压后保存设置时，程序会在对应目录创建新的配置文件。
+每个插件的配置保存在自己的目录中：
 
-程序目录的 config.ini 保存 [colpilot] 配置节中的插件启用状态和插件显示顺序。左侧插件导航支持拖拽排序，右侧插件卡片使用相同顺序。插件目录的 config.ini 保存该插件的配置。更新请求只写入请求中提供的配置项；空值的含义和清除方式由插件自己的 README.md 说明。
+plugins\\<plugin-id>\\config.ini
 
-## 目录用途
+插件配置文件可能包含账号、密码或其他个人信息，请保护这些文件。portable 压缩包和构建输出不会预先包含个人配置；程序在用户首次保存设置时创建对应文件。
 
-- backend：FastAPI 服务源代码
-- config.ini：程序运行后生成的程序级配置文件
-- plugins：可选插件目录，核心项目通过清单发现本机已经放入的插件
-- src：Vue 前端源代码
-- src-tauri：Tauri 桌面程序源代码和配置
-- scripts：客户端构建脚本
-- target：构建生成的 portable 客户端目录
-- node_modules、.venv：本地开发依赖
-- .learnings：开发过程记录
+更新设置时，程序会保存请求中实际提交的字段。密码输入框为空时的处理方式、清除账号信息的方法和其他特殊规则，按照对应插件 README.md 的说明执行。
 
-## 插件加载规则
+## 关闭程序
 
-每个插件通过 manifest.json 描述自身信息和入口。核心项目会检查以下内容：
+关闭主窗口后，程序会回到任务栏托盘。需要结束 Colpilot 时，请在任务栏托盘图标上打开右键菜单并选择退出。
 
-- 插件标识、名称、说明、图标、分类和显示颜色
-- tool_type：continuous 或 on_demand
-- 后端模块和工厂函数
-- 前端视图入口
+退出操作会依次停止插件任务、本地服务和桌面窗口。插件正在关闭外部进程时，程序会等待进程完成关闭。
 
-continuous 插件需要提供 start、stop 和 runtime_status 方法。on_demand 插件需要提供 run(arguments) 方法。插件产生的进程需要交给 Colpilot 的进程管理器登记，程序退出时统一结束这些进程。
+## 常见问题
 
-## 通用接口
+### 工作台没有显示插件
 
-- GET /api/health：检查本地服务状态
-- GET /api/plugins：读取已经发现的插件清单
-- POST /api/plugins/order：保存插件显示顺序，参数格式为 {"order":["plugin-a","plugin-b"]}
-- GET /api/plugins/{plugin_id}/status：读取插件状态
-- POST /api/plugins/{plugin_id}/settings：保存插件设置
-- POST /api/plugins/{plugin_id}/toggle：启用或停用插件
-- POST /api/plugins/{plugin_id}/run：按需运行插件，参数格式为 {"arguments":{}}
-- POST /api/plugins/{plugin_id}/open-output-directory：打开插件提供的输出目录
-- POST /api/commands：发送程序指令，当前支持 {"command":"exit"}
+请确认插件文件位于程序目录的 plugins 文件夹中，并阅读对应插件 README.md 检查目录结构和运行条件。修改插件文件后，重新启动 Colpilot。
 
-插件专用接口、参数、返回数据和外部服务说明，写在对应插件目录的 README.md 中。
+### 插件页面显示错误
+
+先查看插件页面中的错误信息，再按照对应插件 README.md 检查账号、密码、网络连接、文件夹权限和外部服务状态。
+
+### 配置无法保存
+
+请确认程序目录和插件目录具有写入权限。portable 程序建议放在用户拥有写入权限的目录中。配置文件被其他程序占用时，请关闭占用程序后重新保存。
+
+### 程序退出时间较长
+
+持续运行插件可能需要关闭后台进程和外部窗口。等待退出操作完成后，再次启动 Colpilot。

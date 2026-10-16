@@ -830,3 +830,30 @@ Colpilot 程序名和设置入口需要固定放在左侧栏顶部，插件导�
 ### Resolution
 - **Resolved**: 2026-10-16
 - **Notes**: 已从 Colpilot 主仓库提交和远程分支移除 `colmon`，本地目录仍然存在并由忽略规则保护；构建脚本已支持本地目录存在与缺失两种情况。
+
+---
+
+## [LRN-20261016-011] user_facing_readme_scope
+
+**Logged**: 2026-10-16
+**Priority**: high
+**Status**: resolved
+**Area**: docs
+
+### Summary
+根目录 README 面向最终用户，内容应集中在安装、使用、配置、退出和常见问题。
+
+### Details
+用户文档不应加入开发工具、依赖安装命令或具体插件清单。插件专属功能与配置说明继续放在各插件自己的 README 中，根目录文档只保留使用 Colpilot 所需的通用说明。
+
+### Suggested Action
+更新根目录 README 时检查用户操作路径，移除开发流程内容，并避免写入具体插件的产品说明。
+
+### Metadata
+- **Source**: user_feedback
+- **Related Files**: README.md, plugins/*/README.md
+- **Tags**: documentation, user-guide, plugin-boundary
+
+### Resolution
+- **Resolved**: 2026-10-16
+- **Notes**: 已完成用户版 README 重写，并通过文本检查确认开发内容、具体插件名称和预装说明均已移除。

@@ -3387,3 +3387,34 @@ FAIL: active gap style
 - **Notes**: 已完成空隙高亮实现，回归检查全部通过。
 
 ---
+
+## [ERR-20261016-015] bulk_readme_replace_patch
+
+**Logged**: 2026-10-16
+**Priority**: low
+**Status**: resolved
+**Area**: docs
+
+### Summary
+批量替换多个 README 文件的补丁格式被编辑工具拒绝。
+
+### Error
+工具提示同一个文件在补丁中包含多个操作。
+
+### Context
+- 尝试在一个补丁中同时删除并新增多个 README 文件。
+- 文件内容没有被该次操作改变。
+- 随后改为分文件删除和新增，文档修改已经完成。
+
+### Suggested Fix
+同一个补丁中对每个文件只保留一种操作；需要完整重写文件时，使用独立的删除补丁和新增补丁。
+
+### Metadata
+- **Reproducible**: yes
+- **Related Files**: README.md, plugins/*/README.md
+
+### Resolution
+- **Resolved**: 2026-10-16
+- **Notes**: 已使用分文件补丁完成文档更新。
+
+---

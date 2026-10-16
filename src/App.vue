@@ -1,35 +1,44 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 
 import { pluginViews } from './plugin-views.js'
 
-const backendUrl = 'http://127.0.0.1:37651'
-
-const sidebarOpen = ref(true)
 const plugins = ref([])
 const selectedPluginId = ref(null)
 const loading = ref(true)
-const backendReady = ref(false)
 const errorMessage = ref('')
 const busyPluginId = ref(null)
+const draggingPluginId = ref(null)
+const dropGapIndex = ref(null)
+const reordering = ref(false)
+let backendUrl = null
 let pluginRefreshTimer = null
-
-const enabledPlugins = computed(() => plugins.value.filter((plugin) => plugin.enabled))
-const selectedPlugin = computed(() => plugins.value.find((plugin) => plugin.id === selectedPluginId.value) ?? null)
-const selectedPluginView = computed(() => {
-  const view = selectedPlugin.value?.view
-  return view ? pluginViews[view] ?? null : null
-})
+let pendingPluginDrag = null
+let pluginDragPreview = null
+let suppressPluginClick = false
 
 const sleep = (duration) => new Promise((resolve) => window.setTimeout(resolve, duration))
 
+async function resolveBackendUrl() {
+  backendUrl = await invoke('get_backend_url')
+}
+
 async function requestBackend(path, options = {}) {
+  if (backendUrl === null) {
+    throw new Error('本地服务地址尚未初始化')
+  }
+
+  const headers = {
+    ...(options.headers ?? {}),
+  }
+  if (options.body !== undefined && headers['Content-Type'] === undefined && headers['content-type'] === undefined) {
+    headers['Content-Type'] = 'application/json'
+  }
+
   const response = await fetch(`${backendUrl}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers ?? {}),
-    },
     ...options,
+    headers,
   })
 
   if (!response.ok) {
@@ -44,7 +53,6 @@ async function waitForBackend() {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     try {
       await requestBackend('/api/health')
-      backendReady.value = true
       return
     } catch (error) {
       if (attempt === 39) {
@@ -65,6 +73,10 @@ async function loadPlugins() {
 }
 
 async function refreshPlugins() {
+  if (reordering.value || pendingPluginDrag !== null) {
+    return
+  }
+
   try {
     await loadPlugins()
     errorMessage.value = ''
@@ -73,8 +85,196 @@ async function refreshPlugins() {
   }
 }
 
-function selectPlugin(plugin) {
+function scrollToPlugin(plugin) {
   selectedPluginId.value = plugin.id
+  document.getElementById(`plugin-card-${plugin.id}`)?.scrollIntoView({
+    behavior: 'smooth',
+    block: 'start',
+  })
+}
+
+function createPluginDragPreview(sourceElement, event) {
+  const previewElement = sourceElement.cloneNode(true)
+  const sourceBounds = sourceElement.getBoundingClientRect()
+  previewElement.classList.remove('is-selected', 'is-dragging', 'is-drag-target')
+  previewElement.classList.add('plugin-drag-preview')
+  previewElement.setAttribute('aria-hidden', 'true')
+  previewElement.style.width = `${sourceBounds.width}px`
+  previewElement.style.transform = `translate3d(${event.clientX + 12}px, ${event.clientY + 12}px, 0)`
+  document.body.append(previewElement)
+  pluginDragPreview = previewElement
+}
+
+function updatePluginDragPreview(clientX, clientY) {
+  if (pluginDragPreview === null) {
+    return
+  }
+
+  pluginDragPreview.style.transform = `translate3d(${clientX + 12}px, ${clientY + 12}px, 0)`
+}
+
+function updatePluginDropGap(clientX, clientY) {
+  const element = document.elementFromPoint(clientX, clientY)
+  const sidebarNav = element?.closest('.sidebar-nav')
+  if (!(sidebarNav instanceof HTMLElement)) {
+    dropGapIndex.value = null
+    return
+  }
+
+  const pluginElements = Array.from(sidebarNav.querySelectorAll('[data-plugin-id]'))
+  let nextDropGapIndex = pluginElements.length
+  for (let index = 0; index < pluginElements.length; index += 1) {
+    const pluginBounds = pluginElements[index].getBoundingClientRect()
+    if (clientY < pluginBounds.top + pluginBounds.height / 2) {
+      nextDropGapIndex = index
+      break
+    }
+  }
+
+  dropGapIndex.value = nextDropGapIndex
+}
+
+function startPluginPointerDrag(pluginId, event) {
+  if (reordering.value || event.button !== 0) {
+    return
+  }
+
+  const sourceElement = event.currentTarget
+  if (!(sourceElement instanceof HTMLElement)) {
+    return
+  }
+
+  pendingPluginDrag = {
+    pluginId,
+    pointerId: event.pointerId,
+    sourceElement,
+    startX: event.clientX,
+    startY: event.clientY,
+    active: false,
+  }
+  sourceElement.setPointerCapture(event.pointerId)
+  window.addEventListener('pointermove', handlePluginPointerMove, { passive: false })
+  window.addEventListener('pointerup', handlePluginPointerUp)
+  window.addEventListener('pointercancel', handlePluginPointerCancel)
+}
+
+function handlePluginPointerMove(event) {
+  if (pendingPluginDrag === null || event.pointerId !== pendingPluginDrag.pointerId) {
+    return
+  }
+
+  const distance = Math.hypot(
+    event.clientX - pendingPluginDrag.startX,
+    event.clientY - pendingPluginDrag.startY,
+  )
+  if (!pendingPluginDrag.active) {
+    if (distance < 5) {
+      return
+    }
+
+    pendingPluginDrag.active = true
+    draggingPluginId.value = pendingPluginDrag.pluginId
+    dropGapIndex.value = null
+    document.body.classList.add('is-plugin-dragging')
+    createPluginDragPreview(pendingPluginDrag.sourceElement, event)
+  }
+
+  event.preventDefault()
+  updatePluginDragPreview(event.clientX, event.clientY)
+  updatePluginDropGap(event.clientX, event.clientY)
+}
+
+function handlePluginPointerUp(event) {
+  if (pendingPluginDrag === null || event.pointerId !== pendingPluginDrag.pointerId) {
+    return
+  }
+
+  const currentDrag = pendingPluginDrag
+  if (currentDrag.active) {
+    event.preventDefault()
+    updatePluginDropGap(event.clientX, event.clientY)
+  }
+  const currentDropGapIndex = currentDrag.active ? dropGapIndex.value : null
+  finishPluginPointerDrag()
+
+  if (currentDrag.active && currentDropGapIndex !== null) {
+    void persistPluginOrder(currentDrag.pluginId, currentDropGapIndex)
+  }
+}
+
+function handlePluginPointerCancel(event) {
+  if (pendingPluginDrag === null || event.pointerId !== pendingPluginDrag.pointerId) {
+    return
+  }
+
+  finishPluginPointerDrag()
+}
+
+function finishPluginPointerDrag() {
+  const currentDrag = pendingPluginDrag
+  if (currentDrag?.sourceElement.hasPointerCapture(currentDrag.pointerId)) {
+    currentDrag.sourceElement.releasePointerCapture(currentDrag.pointerId)
+  }
+  window.removeEventListener('pointermove', handlePluginPointerMove)
+  window.removeEventListener('pointerup', handlePluginPointerUp)
+  window.removeEventListener('pointercancel', handlePluginPointerCancel)
+  pluginDragPreview?.remove()
+  pluginDragPreview = null
+  draggingPluginId.value = null
+  dropGapIndex.value = null
+  document.body.classList.remove('is-plugin-dragging')
+
+  if (currentDrag?.active) {
+    suppressPluginClick = true
+    window.setTimeout(() => {
+      suppressPluginClick = false
+    }, 0)
+  }
+  pendingPluginDrag = null
+}
+
+async function persistPluginOrder(sourcePluginId, insertionIndex) {
+  const previousPlugins = [...plugins.value]
+  const sourceIndex = previousPlugins.findIndex((plugin) => plugin.id === sourcePluginId)
+  if (sourceIndex < 0 || insertionIndex < 0 || insertionIndex > previousPlugins.length) {
+    return
+  }
+
+  const nextPlugins = [...previousPlugins]
+  const [movedPlugin] = nextPlugins.splice(sourceIndex, 1)
+  const adjustedInsertionIndex = sourceIndex < insertionIndex ? insertionIndex - 1 : insertionIndex
+  nextPlugins.splice(adjustedInsertionIndex, 0, movedPlugin)
+
+  if (nextPlugins.every((plugin, index) => plugin.id === previousPlugins[index].id)) {
+    return
+  }
+
+  plugins.value = nextPlugins
+  reordering.value = true
+  errorMessage.value = ''
+
+  try {
+    plugins.value = await requestBackend('/api/plugins/order', {
+      method: 'POST',
+      body: JSON.stringify({
+        order: nextPlugins.map((plugin) => plugin.id),
+      }),
+    })
+  } catch (error) {
+    plugins.value = previousPlugins
+    errorMessage.value = error instanceof Error ? error.message : String(error)
+  } finally {
+    reordering.value = false
+  }
+}
+
+function handlePluginClick(plugin, event) {
+  if (suppressPluginClick) {
+    event.preventDefault()
+    return
+  }
+
+  scrollToPlugin(plugin)
 }
 
 async function togglePlugin(plugin) {
@@ -97,6 +297,7 @@ async function togglePlugin(plugin) {
 
 onMounted(async () => {
   try {
+    await resolveBackendUrl()
     await waitForBackend()
     await loadPlugins()
     pluginRefreshTimer = window.setInterval(refreshPlugins, 2000)
@@ -111,193 +312,124 @@ onBeforeUnmount(() => {
   if (pluginRefreshTimer !== null) {
     window.clearInterval(pluginRefreshTimer)
   }
+  finishPluginPointerDrag()
 })
 </script>
 
 <template>
-  <div class="app-shell" :class="{ 'sidebar-collapsed': !sidebarOpen }">
-    <aside class="sidebar" :class="{ 'is-hidden': !sidebarOpen }">
-      <div class="brand-block">
-        <div class="brand-mark">C</div>
-        <div class="brand-copy">
-          <strong>Colpilot</strong>
-          <span>工具驾驶舱</span>
-        </div>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="sidebar-header">
+        <h1 class="app-title">Colpilot</h1>
+        <button class="settings-button" type="button" title="设置" aria-label="设置">⚙</button>
       </div>
 
-      <nav class="sidebar-nav" aria-label="主导航">
-        <button class="nav-item is-active" type="button">
-          <span class="nav-icon">⌂</span>
-          <span>仪表盘</span>
-        </button>
-
+      <nav class="sidebar-nav" aria-label="插件管理">
         <div class="nav-caption">插件管理</div>
-        <button
-          v-for="plugin in plugins"
-          :key="plugin.id"
-          class="nav-item plugin-nav-item"
-          :class="{ 'is-selected': plugin.id === selectedPluginId }"
-          type="button"
-          @click="selectPlugin(plugin)"
-        >
-          <span class="plugin-nav-icon" :style="{ '--plugin-color': plugin.color }">{{ plugin.icon }}</span>
-          <span class="nav-item-label">{{ plugin.name }}</span>
-          <span
-            v-if="plugin.tool_type === 'continuous'"
-            class="nav-runtime-status"
-            :class="`is-${plugin.runtime?.status ?? 'stopped'}`"
-            :title="plugin.runtime?.detail ?? '工具未运行'"
-            :aria-label="plugin.runtime?.detail ?? '工具未运行'"
-          ></span>
-        </button>
+        <div
+          class="plugin-drop-gap"
+          :class="{ 'is-active': dropGapIndex === 0 }"
+          aria-hidden="true"
+        ></div>
+        <template v-for="(plugin, index) in plugins" :key="plugin.id">
+          <button
+            class="nav-item plugin-nav-item"
+            :class="{
+              'is-selected': plugin.id === selectedPluginId,
+              'is-dragging': plugin.id === draggingPluginId,
+            }"
+            type="button"
+            :data-plugin-id="plugin.id"
+            :aria-grabbed="plugin.id === draggingPluginId"
+            @pointerdown="startPluginPointerDrag(plugin.id, $event)"
+            @click="handlePluginClick(plugin, $event)"
+          >
+            <span class="plugin-nav-icon" :style="{ '--plugin-color': plugin.color }">{{ plugin.icon }}</span>
+            <span class="nav-item-label">{{ plugin.name }}</span>
+            <span
+              v-if="plugin.tool_type === 'continuous'"
+              class="nav-runtime-status"
+              :class="`is-${plugin.runtime?.status ?? 'stopped'}`"
+              :title="plugin.runtime?.detail ?? '工具未运行'"
+              :aria-label="plugin.runtime?.detail ?? '工具未运行'"
+            ></span>
+          </button>
+          <div
+            class="plugin-drop-gap"
+            :class="{ 'is-active': dropGapIndex === index + 1 }"
+            aria-hidden="true"
+          ></div>
+        </template>
       </nav>
-
-      <div class="sidebar-footer">
-        <div class="footer-orb"></div>
-        <div>
-          <strong>{{ enabledPlugins.length }} 个功能已启用</strong>
-          <span>从侧边栏快速进入</span>
-        </div>
-      </div>
     </aside>
 
     <main class="main-content">
-      <header class="topbar">
-        <div class="topbar-left">
-          <button class="icon-button" type="button" title="隐藏或显示侧边栏" @click="sidebarOpen = !sidebarOpen">
-            <span v-if="sidebarOpen">☰</span>
-            <span v-else>☷</span>
-          </button>
-          <div class="breadcrumb">
-            <span>工作台</span>
-            <span class="breadcrumb-separator">/</span>
-            <strong>仪表盘</strong>
-          </div>
-        </div>
-
-        <div class="topbar-right">
-          <span class="connection-status" :class="{ 'is-offline': !backendReady }">
-            <span class="connection-dot"></span>
-            {{ backendReady ? '本地服务在线' : '正在连接本地服务' }}
-          </span>
-          <div class="avatar">C</div>
-        </div>
-      </header>
-
       <section class="dashboard-content">
-        <div class="hero-section">
-          <div>
-            <p class="eyebrow">GOOD MORNING, PILOT</p>
-            <h1>今天想用哪个工具？</h1>
-            <p class="hero-description">把低频但重要的小工具集中在一个清晰的工作台里。</p>
-          </div>
-          <div class="hero-illustration" aria-hidden="true">
-            <div class="illustration-ring ring-one"></div>
-            <div class="illustration-ring ring-two"></div>
-            <div class="illustration-core">✦</div>
-          </div>
-        </div>
-
-        <div class="stats-row">
-          <div class="stat-card">
-            <span class="stat-label">全部功能</span>
-            <strong>{{ plugins.length }}</strong>
-            <span class="stat-hint">已接入工作台</span>
-          </div>
-          <div class="stat-card accent-card">
-            <span class="stat-label">当前可用</span>
-            <strong>{{ enabledPlugins.length }}</strong>
-            <span class="stat-hint">随时可以打开</span>
-          </div>
-          <div class="stat-card">
-            <span class="stat-label">工作状态</span>
-            <strong>{{ backendReady ? 'Ready' : 'Wait' }}</strong>
-            <span class="stat-hint">Python 服务状态</span>
-          </div>
-        </div>
-
-        <div class="section-heading">
-          <div>
-            <p class="eyebrow">YOUR TOOLBOX</p>
-            <h2>功能插件</h2>
-          </div>
-          <span class="section-count">{{ plugins.length }} 个功能</span>
-        </div>
-
         <div v-if="loading" class="state-panel">
           <div class="loader"></div>
           <strong>正在载入功能清单</strong>
           <span>正在等待本地服务完成启动</span>
         </div>
 
-        <div v-else-if="errorMessage" class="state-panel error-panel">
+        <div v-else-if="errorMessage && plugins.length === 0" class="state-panel error-panel">
           <div class="state-icon">!</div>
           <strong>本地服务连接失败</strong>
           <span>{{ errorMessage }}</span>
         </div>
 
-        <div v-else class="plugin-grid">
-          <article
-            v-for="plugin in plugins"
-            :key="plugin.id"
-            class="plugin-card"
-            :class="{ 'is-disabled': !plugin.enabled, 'is-focused': plugin.id === selectedPluginId }"
-            @click="selectPlugin(plugin)"
-          >
-            <div class="card-topline">
-              <span class="plugin-icon" :style="{ '--plugin-color': plugin.color }">{{ plugin.icon }}</span>
-              <span class="plugin-category">{{ plugin.category }}</span>
-              <span class="enabled-pill" :class="{ 'is-disabled': !plugin.enabled }">
-                {{ plugin.enabled ? '已启用' : '已停用' }}
-              </span>
-            </div>
-            <h3>{{ plugin.name }}</h3>
-            <p>{{ plugin.description }}</p>
-            <div class="card-footer">
-              <button class="open-button" type="button" :disabled="!plugin.enabled" @click.stop="selectPlugin(plugin)">
-                打开功能 <span>→</span>
-              </button>
-              <button
-                class="toggle-button"
-                type="button"
-                :disabled="busyPluginId === plugin.id"
-                @click.stop="togglePlugin(plugin)"
-              >
-                {{ busyPluginId === plugin.id ? '处理中' : plugin.enabled ? '停用' : '启用' }}
-              </button>
-            </div>
-          </article>
+        <div v-else>
+          <div v-if="errorMessage" class="inline-error">
+            <span>{{ errorMessage }}</span>
+          </div>
+
+          <div class="plugin-grid">
+            <article
+              v-for="plugin in plugins"
+              :key="plugin.id"
+              :id="`plugin-card-${plugin.id}`"
+              class="plugin-card"
+              :class="{ 'is-disabled': !plugin.enabled, 'is-focused': plugin.id === selectedPluginId }"
+            >
+              <div class="card-topline">
+                <span class="plugin-icon" :style="{ '--plugin-color': plugin.color }">{{ plugin.icon }}</span>
+                <span class="plugin-category">{{ plugin.category }}</span>
+                <span class="enabled-pill" :class="{ 'is-disabled': !plugin.enabled }">
+                  {{ plugin.enabled ? '已启用' : '已停用' }}
+                </span>
+              </div>
+              <h3>{{ plugin.name }}</h3>
+              <p class="plugin-description">{{ plugin.description }}</p>
+
+              <div class="plugin-card-view">
+                <component
+                  v-if="plugin.enabled && pluginViews[plugin.view]"
+                  :is="pluginViews[plugin.view]"
+                  :plugin="plugin"
+                  :request-backend="requestBackend"
+                />
+                <div v-else-if="plugin.enabled" class="plugin-unavailable-state">
+                  <strong>插件界面不可用</strong>
+                  <span>当前插件没有注册可用的前端组件</span>
+                </div>
+                <div v-else class="plugin-disabled-state">
+                  <strong>插件已停用</strong>
+                  <span>启用插件后可以使用对应功能</span>
+                </div>
+              </div>
+
+              <div class="card-footer">
+                <button
+                  class="toggle-button"
+                  type="button"
+                  :disabled="busyPluginId === plugin.id"
+                  @click.stop="togglePlugin(plugin)"
+                >
+                  {{ busyPluginId === plugin.id ? '处理中' : plugin.enabled ? '停用' : '启用' }}
+                </button>
+              </div>
+            </article>
+          </div>
         </div>
-
-        <section
-          v-if="selectedPlugin"
-          class="detail-panel"
-        >
-          <div class="detail-header">
-            <div class="detail-icon" :style="{ '--plugin-color': selectedPlugin.color }">{{ selectedPlugin.icon }}</div>
-            <div class="detail-copy">
-              <p class="eyebrow">SELECTED PLUGIN</p>
-              <h2>{{ selectedPlugin.name }}</h2>
-              <p>{{ selectedPlugin.description }}</p>
-            </div>
-            <div class="detail-meta">
-              <span>插件状态</span>
-              <strong>{{ selectedPlugin.enabled ? '可用' : '已停用' }}</strong>
-            </div>
-          </div>
-
-          <component
-            v-if="selectedPluginView"
-            :is="selectedPluginView"
-            :plugin="selectedPlugin"
-            :request-backend="requestBackend"
-          />
-          <div v-else class="state-panel error-panel">
-            <div class="state-icon">!</div>
-            <strong>插件界面不可用</strong>
-            <span>当前插件没有注册可用的前端组件</span>
-          </div>
-        </section>
       </section>
     </main>
   </div>

@@ -33,6 +33,8 @@
     "icon": ["icons/colpilot-icon.ico"],
     "resources": [
       "../backend/main.py",
+      "../backend/user_config.py",
+      "../backend/process_manager.py",
       "../backend/requirements.txt",
       "../plugins"
     ]

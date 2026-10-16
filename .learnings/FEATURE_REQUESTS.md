@@ -4,6 +4,89 @@ Capabilities requested by the user.
 
 ---
 
+## [FEAT-20261015-003] plugin_local_config_files
+
+**Logged**: 2026-10-15T21:20:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: config
+
+### Requested Capability
+将各插件的配置文件保存到对应插件目录，程序目录只保留程序级配置。
+
+### User Context
+绝大部分配置项属于具体插件，配置文件需要跟随插件目录管理，并且 portable 构建不能携带用户配置。
+
+### Suggested Implementation
+为每个插件创建独立的 `config.ini`，继续使用插件配置节；程序级 `config.ini` 只保存插件启用状态。启动时迁移旧版程序级插件配置和旧 JSON 配置，构建复制阶段过滤所有插件配置文件。
+
+### Metadata
+- Frequency: correction
+- Related Features: central_personal_config_ini, packaged_client_output
+- Tags: config, plugin, ini, migration, portable
+
+### Resolution
+- **Resolved**: 2026-10-15T21:55:00+08:00
+- **Notes**: 已将插件设置移动到各插件目录的 `config.ini`，程序级文件只保存插件启用状态；旧程序级配置、旧 JSON 配置和 portable 输出规则均已完成验证。
+
+## [FEAT-20261015-002] central_personal_config_ini
+
+**Logged**: 2026-10-15T16:30:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: config
+
+### Requested Capability
+将个人配置统一保存到程序目录的 `config.ini`，构建输出和 portable 压缩包不包含该文件。
+
+### User Context
+用户需要更新配置时保留已有敏感字段，并让程序目录中的个人信息与可发布的客户端文件分离。
+
+### Complexity Estimate
+complex
+
+### Suggested Implementation
+建立共享的 `UserConfigStore`，让各插件使用独立配置节保存设置；启动器向后端传递程序目录配置路径；构建脚本排除个人配置、旧配置文件和运行生成文件。
+
+### Metadata
+- Frequency: first_time
+- Related Features: campus_credentials_ui_and_blank_template, packaged_client_output
+
+### Resolution
+- **Resolved**: 2026-10-15T16:50:00+08:00
+- **Notes**: 已加入共享 `UserConfigStore`、程序目录配置路径传递、插件配置节、旧配置迁移、敏感配置保护和 portable 构建排除规则，并完成源代码、portable 后端和完整客户端构建验证。
+
+---
+
+## [FEAT-20261014-001] colmon_continuous_monitor_plugin
+
+**Logged**: 2026-10-14
+**Priority**: high
+**Status**: resolved
+**Area**: integration
+
+### Requested Capability
+将 `D:\ColboiIN\code\Colmon` 集成为持续运行插件，管理除番茄钟外的三个任务栏窗口，并在 ColPilot 页面显示窗口信息与可调整的信息刷新频率。
+
+### User Context
+用户希望在 ColPilot 工作台中统一查看 Colmon 的任务栏监控状态，并通过页面调整三个窗口的数据更新间隔。
+
+### Complexity Estimate
+complex
+
+### Suggested Implementation
+为 Colmon 增加独立的窗口设置目录参数；插件后端启动和终止 Colmon 进程，使用状态文件读取三个任务栏窗口的机器可读信息，通过插件页面展示状态并保存全局刷新频率。
+
+### Metadata
+- Frequency: first_time
+- Related Features: continuous_tool_lifecycle
+
+### Resolution
+- **Resolved**: 2026-10-14
+- **Notes**: 已加入 colmon continuous 插件、三个任务栏窗口状态页面、统一刷新频率设置、独立窗口设置目录和 portable Colmon 运行文件；构建与自动测试已经通过。
+
+---
+
 ## [FEAT-20261013-004] campus_credentials_ui_and_blank_template
 
 **Logged**: 2026-10-13
@@ -426,3 +509,118 @@ medium
 - **Notes**: 已加入 DMM `on_demand` 插件、番号搜索、输出文件夹自动保存、任务状态、元数据保存、预览图下载和输出文件夹打开功能。
 
 ---
+
+## [FEAT-20261015-001] desc_container_auto_renewal
+
+**Logged**: 2026-10-15T15:20:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: integration
+
+### Requested Capability
+开发 Colpilot 插件，访问 DESC 容器管理服务，读取用户容器剩余时间，并提供账号登录、自动登录和自动续约功能。
+
+### User Context
+DESC 服务需要登录认证，用户希望在 Colpilot 中持续查看容器时间，并在设置的时间阈值内自动完成续约。
+
+### Complexity Estimate
+complex
+
+### Suggested Implementation
+在独立插件目录中维护 manifest、FastAPI 插件后端、Vue 页面和本地设置文件。后端保存账号设置、管理 Bearer token，在服务返回 401 时重新登录，按周期读取容器列表和剩余时间，并依据用户设置执行自动续约。
+
+### Metadata
+- Frequency: first_time
+- Related Features: plugin_materials_stay_with_plugin, plugin_tool_execution_types
+- Tags: desc, containers, login, auto-renewal
+
+### Resolution
+- **Resolved**: 2026-10-15T15:40:00+08:00
+- **Notes**: 已加入 `colcontainers` continuous 插件、DESC 账号设置、Bearer token 自动登录、容器剩余时间同步、自动续约阈值和 portable 构建复制。当前对话没有账号凭据，真实账号登录与续约请求将在用户填写账号后执行。
+
+---
+
+## [FEAT-20261016-001] single_dashboard_plugin_cards
+
+**Logged**: 2026-10-16
+**Priority**: high
+**Status**: resolved
+**Area**: frontend
+
+### Requested Capability
+将前端收敛为单一仪表盘，同时显示全部插件卡片；左侧插件管理用于滚动到对应卡片；顶部只保留程序名和设置按钮。
+
+### User Context
+用户需要直接在一个工作区域使用全部插件，并减少欢迎内容、统计信息、服务状态和重复导航内容。
+
+### Suggested Implementation
+移除欢迎区域、统计区域、插件标题区域、顶部服务状态、圆形用户图标和侧边栏底部提示。让每张插件卡片直接承载对应插件界面，插件导航通过卡片标识执行平滑滚动。
+
+### Metadata
+- Frequency: correction
+- Related Features: plugin_materials_stay_with_plugin
+- Tags: frontend, dashboard, plugin-card, navigation
+
+### Resolution
+- **Resolved**: 2026-10-16
+- **Notes**: 主区域已经同时渲染全部插件卡片和对应界面；左侧导航使用平滑滚动；顶部只显示 `Colpilot` 和设置按钮；前端构建与 Tauri portable 构建均已通过。
+
+---
+
+## [FEAT-20261016-002] plugin_process_lifecycle
+
+**Logged**: 2026-10-16
+**Priority**: critical
+**Status**: resolved
+**Area**: backend
+
+### Requested Capability
+将 `colmon` 改为 Colpilot 专用插件，直接管理三个任务栏窗口；统一管理全部插件创建的进程，并在 Colpilot 退出时安全关闭。
+
+### User Context
+当前残留进程会占用插件文件，影响文件修改和程序更新。用户需要退出 Colpilot 后释放全部插件进程和窗口资源。
+
+### Complexity Estimate
+complex
+
+### Suggested Implementation
+为 Colpilot 增加受管进程注册表和退出关闭流程；为持续运行插件提供停止接口和结束等待；将三个任务栏窗口的管理逻辑放入 `colmon` 插件后端，避免启动独立 Colmon 程序。
+
+### Metadata
+- Frequency: correction
+- Related Features: colmon_continuous_monitor_plugin, plugin_tool_execution_types
+- Tags: colmon, process, lifecycle, shutdown
+
+### Resolution
+- **Resolved**: 2026-10-16
+- **Notes**: `colmon` 已改为后端内原生任务栏窗口插件；所有后台进程经过统一登记，桌面端关闭时先请求后端退出，再等待清理，超时由 Windows Job Object 回收进程树。
+
+---
+
+## [FEAT-20261016-003] plugin_drag_reordering
+
+**Logged**: 2026-10-16
+**Priority**: medium
+**Status**: resolved
+**Area**: frontend
+
+### Requested Capability
+允许用户拖拽左侧插件导航调整顺序，并让右侧插件卡片使用相同顺序。
+
+### User Context
+用户需要按照个人使用习惯排列插件，快速导航和仪表盘卡片需要保持一致。
+
+### Complexity Estimate
+medium
+
+### Suggested Implementation
+使用左侧导航的拖拽事件更新共享插件数组，通过后端接口保存插件标识顺序到程序级 `config.ini`；后端返回清单时按照保存顺序排列。
+
+### Metadata
+- Frequency: first_time
+- Related Features: dashboard_card_navigation
+- Tags: frontend, plugin-order, drag-and-drop, config
+
+### Resolution
+- **Resolved**: 2026-10-16
+- **Notes**: 已完成拖拽排序、后端顺序接口、程序级配置保存、重启读取和 portable 客户端验证。

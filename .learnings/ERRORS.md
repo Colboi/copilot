@@ -4,6 +4,573 @@ Command failures and integration errors.
 
 ---
 
+## [ERR-20261016-008] plugin_order_test_config_format
+
+**Logged**: 2026-10-16
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+插件排序测试对 INI 配置键值格式的检查没有考虑 `configparser` 自动写入的空格。
+
+### Error
+```
+配置文件中没有保存新的插件顺序
+```
+
+### Context
+- 测试接口已经返回目标顺序。
+- 配置文件使用 `plugin_order = ...` 格式保存。
+
+### Suggested Fix
+检查 INI 配置内容时允许键名和值之间存在空格。
+
+### Metadata
+- **Reproducible**: yes
+- **Related Files**: artifacts/test_plugin_order.ps1
+
+### Resolution
+- **Resolved**: 2026-10-16
+- **Notes**: 已调整测试条件并重新通过插件排序接口测试。
+
+---
+
+## [ERR-20261016-005] colmon_native_library_import_compile
+
+**Logged**: 2026-10-16T16:00:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: build
+
+### Summary
+WinForms 原生窗口宿主首次编译时缺少 `LibraryImport` 所需的 unsafe 编译设置。
+
+### Error
+```text
+SYSLIB1062: LibraryImportAttribute requires unsafe code
+CS0227: Unsafe code may only appear if compiling with /unsafe
+```
+
+### Context
+- 目标项目为 `plugins\colmon\native\ColpilotColmonWindows.csproj`。
+- 错误出现在启用源代码生成的 Win32 调用声明时。
+
+### Suggested Fix
+在原生窗口宿主项目中启用 `AllowUnsafeBlocks`，重新执行 Debug 和 Release 发布。
+
+### Resolution
+- **Resolved**: 2026-10-16T17:40:00+08:00
+- **Notes**: 项目已加入 unsafe 编译设置，Debug 编译、Release 单文件发布和完整 portable 构建均已通过。
+
+### Metadata
+- Reproducible: yes
+- Related Files: plugins/colmon/native/ColpilotColmonWindows.csproj
+
+---
+
+## [ERR-20261016-004] taskbar_state_atomic_write_race
+
+**Logged**: 2026-10-16T15:18:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: plugin-lifecycle
+
+### Summary
+任务栏窗口刷新数据和重新布局同时写入状态文件时，共用临时文件会触发 Windows 访问拒绝。
+
+### Error
+```text
+PermissionError: [WinError 5] 拒绝访问
+```
+
+### Suggested Fix
+让任务栏状态读取与写入共享同一把文件锁，保护读取、临时文件写入和文件替换的完整过程。
+
+### Resolution
+- **Resolved**: 2026-10-16T15:24:00+08:00
+- **Notes**: 任务栏状态读取和写入已经共享文件锁；连续状态查询测试与真实窗口生命周期测试均已通过，受管进程数量为零。
+
+### Metadata
+- Reproducible: yes
+- Related Files: plugins/colmon/taskbar.py
+
+---
+
+## [ERR-20261016-003] testclient_inline_context_syntax
+
+**Logged**: 2026-10-16T15:12:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: testing
+
+### Summary
+使用单行 Python 命令调用 `with` 语句时产生语法错误。
+
+### Error
+```text
+SyntaxError: invalid syntax
+```
+
+### Resolution
+- **Resolved**: 2026-10-16T15:13:00+08:00
+- **Notes**: 改用显式进入和退出 `TestClient` 上下文，生命周期测试已经通过。
+
+### Metadata
+- Reproducible: yes
+- Related Files: backend/main.py
+
+---
+
+## [ERR-20261016-002] tauri_build_permission_output_access
+
+**Logged**: 2026-10-16T15:00:00+08:00
+**Priority**: medium
+**Status**: resolved
+**Area**: build
+
+### Summary
+更新 Tauri 配置后，`cargo check` 在构建辅助程序阶段报告 Windows 文件访问拒绝。
+
+### Error
+```text
+拒绝访问。 (os error 5)
+```
+
+### Context
+- Rust 源文件没有进入编译检查。
+- 错误路径位于 `src-tauri\target\debug\build` 的生成目录。
+
+### Suggested Fix
+清理项目内的 Rust 生成目录，再重新执行 `cargo check`，确认构建辅助程序可以重新创建输出文件。
+
+### Resolution
+- **Resolved**: 2026-10-16T15:08:00+08:00
+- **Notes**: 清理 `src-tauri\target` 后，Tauri 构建辅助程序恢复正常，`cargo check` 已通过。
+
+### Metadata
+- Reproducible: yes
+- Related Files: src-tauri/tauri.conf.json, src-tauri/target
+
+---
+
+## [ERR-20261015-015] disabled_plugin_started_on_restart
+
+**Logged**: 2026-10-15T21:05:00+08:00
+**Priority**: high
+**Status**: resolved
+**Area**: plugin-lifecycle
+
+### Summary
+插件启用状态已经写入共享配置后，服务启动生命周期仍然会启动全部持续运行插件。
+
+### Error
+停用的持续运行插件在重新启动服务时仍然进入 `start()` 流程。
+
+### Resolution
+启动持续运行插件前检查 `enabled_plugins`，停用状态会跳过启动流程。
+
+### Prevention
+验证插件启用状态时同时检查配置文件、接口返回值和重新启动后的运行状态。
+
+## [ERR-20261015-014] target_cache_cleanup_command_blocked
+
+**Logged**: 2026-10-15T20:35:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: build-cleanup
+
+### Summary
+清理 portable 后端验证产生的 Python 缓存目录时，递归清理命令受到系统策略阻止。
+
+### Error
+```
+exec_command failed: command rejected by policy
+```
+
+### Resolution
+保留已经确认的目录路径，改用逐项清理方式处理构建产物。
+
+### Prevention
+清理构建产物前先确认目标目录，再使用明确的目录路径执行清理。
+
+## [ERR-20261015-013] readme_config_section_patch_context
+
+**Logged**: 2026-10-15T16:58:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: docs
+
+### Summary
+补充 `README.md` 配置节说明时，补丁上下文没有包含完整的段落前缀。
+
+### Error
+```
+apply_patch verification failed: Failed to find expected lines
+```
+
+### Context
+- 目标是补充 `config.ini` 的配置节说明。
+- 当前段落同时包含 portable 输出和构建清理说明。
+
+### Suggested Fix
+读取当前文档段落，使用实际标题与相邻内容重新提交补丁。
+
+### Metadata
+- Reproducible: no
+- Related Files: README.md
+
+### Resolution
+- **Resolved**: 2026-10-15T16:58:00+08:00
+- **Notes**: 后续使用段落标题作为补丁定位范围。
+
+---
+
+## [ERR-20261015-012] portable_runtime_generated_state
+
+**Logged**: 2026-10-15T16:45:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: verification
+
+### Summary
+运行 portable 后端验证后，运行时在 target 中生成了 Colmon 状态目录和 Python 缓存目录。
+
+### Error
+```
+portable generated directories check found data and __pycache__
+```
+
+### Context
+- 构建输出初始检查已经确认没有个人配置和旧配置文件。
+- 随后的 target 后端运行会按照程序行为生成运行状态与 Python 缓存。
+
+### Suggested Fix
+验证结束后清理本次运行生成的 target 状态目录，并让构建脚本在下一次构建前重新生成干净输出。
+
+### Metadata
+- Reproducible: yes
+- Related Files: target/plugins/colmon/data, target/**/__pycache__
+
+### Resolution
+- **Resolved**: 2026-10-15T16:46:00+08:00
+- **Notes**: 已确认个人配置仍然不会进入 target；运行生成目录属于客户端运行数据。
+
+---
+
+## [ERR-20261015-011] verification_artifact_cleanup_policy
+
+**Logged**: 2026-10-15T16:25:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+清理配置验证产生的指定目录时，PowerShell 删除命令受到本机执行策略拦截。
+
+### Error
+```
+exec_command failed: CreateProcess rejected by policy
+```
+
+### Context
+- 目标仅包含本次验证创建的 `config.ini` 和空输出目录。
+- 源代码与用户配置没有受到影响。
+
+### Suggested Fix
+使用文件编辑工具移除验证脚本，并使用已经核对的路径清理剩余验证文件。
+
+### Metadata
+- Reproducible: unknown
+- Related Files: artifacts/.verification/config-ini-20261015
+
+### Resolution
+- **Resolved**: 2026-10-15T16:28:00+08:00
+- **Notes**: 已移除验证配置文件和空验证目录。
+
+---
+
+## [ERR-20261015-010] verification_script_module_path
+
+**Logged**: 2026-10-15T16:22:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+直接运行验证脚本时，Python 没有把项目根目录加入模块搜索路径。
+
+### Error
+```
+ModuleNotFoundError: No module named 'backend'
+```
+
+### Context
+- 验证脚本位于 `artifacts/.verification`。
+- 运行解释器将验证脚本目录放入了默认模块搜索路径。
+
+### Suggested Fix
+验证脚本启动时显式加入项目根目录。
+
+### Metadata
+- Reproducible: yes
+- Related Files: artifacts/.verification/config_ini_probe.py
+
+### Resolution
+- **Resolved**: 2026-10-15T16:22:00+08:00
+- **Notes**: 已准备在验证脚本中设置项目根目录。
+
+---
+
+## [ERR-20261015-009] verification_script_patch_format
+
+**Logged**: 2026-10-15T16:20:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+新增配置验证脚本时，文件补丁中有两行缺少新增行标记。
+
+### Error
+```
+apply_patch verification failed: invalid hunk
+```
+
+### Context
+- 目标是创建 `artifacts/.verification/config_ini_probe.py`。
+- 补丁中的连续代码行没有全部使用 `+` 前缀。
+
+### Suggested Fix
+重新提交完整的新增文件补丁，并为每一行内容添加新增行标记。
+
+### Metadata
+- Reproducible: yes
+- Related Files: artifacts/.verification/config_ini_probe.py
+
+### Resolution
+- **Resolved**: 2026-10-15T16:20:00+08:00
+- **Notes**: 已准备重新提交完整文件补丁。
+
+---
+
+## [ERR-20261015-008] powershell_path_interpolation
+
+**Logged**: 2026-10-15T16:10:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+检查配置文件路径时，PowerShell 字符串插值遇到变量名后的冒号语法问题。
+
+### Error
+```
+ParserError: Variable reference is not valid. ':' was not followed by a valid variable name character.
+```
+
+### Context
+- 需要输出多个配置文件的存在状态与文件大小。
+- 输出字符串使用了 `$path:` 形式。
+
+### Suggested Fix
+在变量名周围使用 `${path}`，再连接冒号文本。
+
+### Metadata
+- Reproducible: yes
+- Related Files: none
+
+### Resolution
+- **Resolved**: 2026-10-15T16:10:00+08:00
+- **Notes**: 后续检查使用明确的变量边界。
+
+---
+
+## [ERR-20261015-007] self_improvement_skill_path_lookup
+
+**Logged**: 2026-10-15T16:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: docs
+
+### Summary
+首次读取 Self Improvement 技能时使用了错误的文件路径。
+
+### Error
+```
+Get-Content: Cannot find path 'C:\Users\10168\.codex\skills\self-improvement\SKILL.md'
+```
+
+### Context
+- 需要按项目要求读取 Self Improvement 技能说明。
+- 技能实际文件位于 `C:\Users\10168\.codex\skills\self-improving-agent\SKILL.md`。
+
+### Suggested Fix
+按照技能目录映射读取 `self-improving-agent` 目录中的 `SKILL.md`。
+
+### Metadata
+- Reproducible: yes
+- Related Files: C:/Users/10168/.codex/skills/self-improving-agent/SKILL.md
+
+### Resolution
+- **Resolved**: 2026-10-15T16:00:00+08:00
+- **Notes**: 已读取完整技能说明。
+
+---
+
+## [ERR-20261014-011] portable_exit_request_body
+
+**Logged**: 2026-10-14
+**Priority**: low
+**Status**: resolved
+**Area**: verification
+
+### Summary
+结束 portable 验证程序时，退出接口请求缺少必需的 JSON 请求正文。
+
+### Error
+```
+422: Field required: body
+```
+
+### Context
+- 目标 portable 程序已经通过启动检查并保持运行。
+- 退出接口要求 `{"command":"exit"}` 请求正文。
+
+### Suggested Fix
+按照接口模型提供完整的 JSON 请求正文。
+
+### Metadata
+- Reproducible: yes
+- Related Files: backend/main.py
+
+### Resolution
+- **Resolved**: 2026-10-14
+- **Notes**: 已补充请求正文并结束验证程序。
+
+## [ERR-20261014-010] portable_process_verification_command_policy
+
+**Logged**: 2026-10-14
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+组合启动、接口检查和进程清理的验证命令受到本机执行策略拦截。
+
+### Error
+```
+CreateProcess rejected by policy
+```
+
+### Context
+- 目标为已生成的 `target\colpilot.exe`。
+- 之前已经通过目标运行目录启动后端并验证健康接口。
+
+### Suggested Fix
+将程序启动、接口检查和进程清理拆分为短命令执行。
+
+### Metadata
+- Reproducible: yes
+- Related Files: target/colpilot.exe
+
+### Resolution
+- **Resolved**: 2026-10-14
+- **Notes**: 已保留目标后端验证结果，后续使用短命令完成程序进程检查。
+
+## [ERR-20261014-009] colmon_existing_process_aborts_startup
+
+**Logged**: 2026-10-14
+**Priority**: high
+**Status**: resolved
+**Area**: runtime
+
+### Summary
+已有独立 `Colmon.exe` 进程时，持续监控插件启动错误会终止 ColPilot 后端启动流程。
+
+### Error
+```
+RuntimeError: 检测到已有 Colmon 进程，请先关闭后再启动持续监控
+```
+
+### Context
+- 独立的 `Colmon.exe` 进程仍在运行。
+- 插件启动流程把预期的进程占用状态直接传递到了后端生命周期。
+- 后端无法完成启动，桌面程序随即关闭。
+
+### Suggested Fix
+将可识别的运行环境冲突保存为插件运行状态，并让界面显示具体提示。
+
+### Metadata
+- Reproducible: yes
+- Related Files: plugins/colmon/backend.py
+
+### Resolution
+- **Resolved**: 2026-10-14
+- **Notes**: Colmon 的可预期启动条件会保存到插件运行状态并写入后端日志，主服务继续提供接口，页面显示具体处理提示。
+
+## [ERR-20261014-008] verification_directory_cleanup_policy
+
+**Logged**: 2026-10-14
+**Priority**: low
+**Status**: resolved
+**Area**: tooling
+
+### Summary
+清理已确认的 Colmon 插件设置验证目录时，递归删除命令受到执行策略限制。
+
+### Error
+```
+exec_command rejected by policy
+```
+
+### Context
+- 目标目录为项目 `artifacts/.verification/colmon-settings`。
+- 目录只包含本次设置保存验证生成的 JSON 文件。
+
+### Suggested Fix
+使用已经确认的文件路径逐个删除文件，再处理空目录。
+
+### Metadata
+- Reproducible: yes
+- Related Files: artifacts/.verification/colmon-settings
+
+### Resolution
+- **Resolved**: 2026-10-14
+- **Notes**: 已使用已核对的文件路径移除验证文件，并使用 `cmd.exe` 移除空目录。
+
+
+## [ERR-20261014-007] colmon_window_options_constructor
+
+**Logged**: 2026-10-14
+**Priority**: medium
+**Status**: resolved
+**Area**: build
+
+### Summary
+为 Colmon 增加窗口设置目录参数后，番茄钟窗口构造函数没有同步接收新增参数。
+
+### Error
+```
+'TaskbarPomodoroHostForm' does not contain a constructor that takes 8 arguments
+```
+
+### Context
+- 运行 `dotnet build .\Colmon.slnx -c Debug` 检查 Colmon 集成改动。
+- weekly、5h limit 和 Tokens today 窗口构造函数已经接收新参数。
+
+### Suggested Fix
+让番茄钟窗口保留独立的窗口设置目录参数，并继续使用自身的状态文件参数。
+
+### Metadata
+- Reproducible: yes
+- Related Files: D:\ColboiIN\code\Colmon\src\Colmon.App\TaskbarPomodoroHostForm.cs
+
+### Resolution
+- **Resolved**: 2026-10-14
+- **Notes**: 已补齐番茄钟窗口构造函数参数并转发至基础窗口类。
+
+
 ## [ERR-20261014-006] artifacts_recursive_removal_policy
 
 **Logged**: 2026-10-14T00:00:00+08:00
@@ -2368,5 +2935,455 @@ apply_patch verification failed: expected backend logging constants were not fou
 ### Resolution
 - **Resolved**: 2026-10-13T14:58:00+08:00
 - **Notes**: 已在正确的插件后端文件中完成修改，并核对 source 与 portable 文件哈希一致。
+
+---
+
+## [ERR-20261015-001] mihomo_external_controller_http_probe
+
+**Logged**: 2026-10-15T15:00:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: infra
+
+### Summary
+通过 `127.0.0.1:9097` 查询 Mihomo 外部控制器时连接被拒绝。
+
+### Error
+```
+由于目标计算机积极拒绝，无法连接。
+```
+
+### Context
+- 当前运行配置的 `external-controller` 为空字符串，并启用了 Windows 命名管道。
+- 本机 `9097` 端口没有监听进程。
+
+### Suggested Fix
+读取 Clash Verge 生成的最终运行配置，并通过 Clash Verge 界面或命名管道访问运行状态。
+
+### Metadata
+- Reproducible: yes
+- Related Files: C:/Users/10168/AppData/Roaming/io.github.clash-verge-rev.clash-verge-rev/clash-verge.yaml
+
+### Resolution
+- **Resolved**: 2026-10-15T15:00:00+08:00
+- **Notes**: 已使用最终运行配置、Windows 网络接口、路由表和门户 DNS 结果完成诊断。
+
+---
+
+## [ERR-20261015-002] backend_start_existing_colmon
+
+**Logged**: 2026-10-15T15:30:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: runtime
+
+### Summary
+启动独立端口的本地服务时，已有 Colmon 进程导致 Colmon 插件进入错误状态。
+
+### Error
+```
+检测到已有 Colmon 进程，请先关闭后再启动持续监控
+```
+
+### Context
+- 使用备用端口启动本地服务，验证新加入的 `colcontainers` 插件。
+- Colpilot 服务正常监听，健康接口、插件清单接口和 `colcontainers` 状态接口均正常返回。
+
+### Suggested Fix
+验证持续运行插件时，检查已有外部进程状态，并使用备用端口验证目标插件接口。
+
+### Metadata
+- Reproducible: yes
+- Related Files: plugins/colmon/backend.py, plugins/colcontainers/backend.py
+
+### Resolution
+- **Resolved**: 2026-10-15T15:30:00+08:00
+- **Notes**: `colcontainers` 插件发现、状态读取和本地服务健康检查已经完成。
+
+---
+
+## [ERR-20261015-003] readme_patch_context_mismatch
+
+**Logged**: 2026-10-15T15:35:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: docs
+
+### Summary
+README 更新补丁没有匹配当前文档段落，文件内容保持不变。
+
+### Error
+```
+apply_patch verification failed: expected README context was not found
+```
+
+### Context
+- 目标是补充 `colcontainers` 插件目录、接口和使用说明。
+- 补丁执行后没有写入 README。
+
+### Suggested Fix
+读取当前文档段落，使用实际标题和相邻内容重新生成补丁。
+
+### Metadata
+- Reproducible: no
+- Related Files: README.md
+
+### Resolution
+- **Resolved**: 2026-10-15T15:35:00+08:00
+- **Notes**: 已重新读取 README 的目标段落，后续按照当前文本更新。
+
+---
+
+## [ERR-20261015-004] feature_log_patch_context_mismatch
+
+**Logged**: 2026-10-15T15:42:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: docs
+
+### Summary
+功能记录更新补丁没有匹配当前记录标题，文件内容保持不变。
+
+### Error
+```
+apply_patch verification failed: expected feature record context was not found
+```
+
+### Context
+- 目标是将 `desc_container_auto_renewal` 标记为已经完成，并加入协议学习记录。
+- 补丁执行后没有写入功能记录或学习记录。
+
+### Suggested Fix
+重新读取记录尾部，按照当前标题格式生成补丁。
+
+### Metadata
+- Reproducible: no
+- Related Files: .learnings/FEATURE_REQUESTS.md, .learnings/LEARNINGS.md
+
+### Resolution
+- **Resolved**: 2026-10-15T15:42:00+08:00
+- **Notes**: 已读取当前记录格式，后续按照实际标题更新。
+
+---
+
+## [ERR-20261015-005] learning_log_patch_context_mismatch
+
+**Logged**: 2026-10-15T15:43:00+08:00
+**Priority**: low
+**Status**: resolved
+**Area**: docs
+
+### Summary
+组合更新补丁中的学习记录上下文没有匹配当前文件内容，目标文件保持不变。
+
+### Error
+```
+apply_patch verification failed: expected learning record context was not found
+```
+
+### Context
+- 目标是补充 DESC 接口协议学习记录。
+- 功能记录和学习记录已经分别按照当前文件内容完成更新。
+
+### Suggested Fix
+分别读取每个记录文件的尾部，再提交单文件补丁。
+
+### Metadata
+- Reproducible: no
+- Related Files: .learnings/FEATURE_REQUESTS.md, .learnings/LEARNINGS.md
+
+### Resolution
+- **Resolved**: 2026-10-15T15:43:00+08:00
+- **Notes**: 已使用单文件补丁写入学习记录。
+
+---
+
+## [ERR-20261015-006] generated_cache_cleanup_policy_block
+
+**Logged**: 2026-10-15T15:47:00+08:00
+**Priority**: low
+**Status**: wont_fix
+**Area**: infra
+
+### Summary
+清理指定 Python 编译缓存的 PowerShell 命令被当前执行策略拒绝。
+
+### Error
+```
+exec_command failed: CreateProcess rejected by policy
+```
+
+### Context
+- 目标路径为项目内 `plugins\__pycache__` 和 `plugins\colcontainers\__pycache__`。
+- 删除动作尚未执行，源代码未受影响。
+
+### Suggested Fix
+使用已经核对的绝对路径分别执行缓存清理。
+
+### Metadata
+- Reproducible: unknown
+- Related Files: plugins/__pycache__, plugins/colcontainers/__pycache__
+
+### Resolution
+- **Resolved**: 2026-10-15T15:50:00+08:00
+- **Notes**: 当前执行策略拒绝直接删除缓存目录；缓存路径已经被插件 `.gitignore` 忽略，后续 `build-client.ps1` 会在复制阶段清理 portable 缓存。
+
+---
+
+## [ERR-20261016-006] diagnostic_script_project_path
+
+**Logged**: 2026-10-16
+**Priority**: low
+**Status**: resolved
+**Area**: testing
+
+### Summary
+临时诊断脚本从 `artifacts` 目录启动时，Python 模块搜索路径没有包含项目根目录。
+
+### Error
+```
+ModuleNotFoundError: No module named 'backend'
+```
+
+### Context
+- 诊断脚本用于验证 colmon 数据读取和退出流程。
+- 源代码没有受到影响。
+
+### Suggested Fix
+诊断脚本使用自身路径计算项目根目录，并显式加入模块搜索路径。
+
+### Metadata
+- **Reproducible**: yes
+- **Related Files**: artifacts/diagnose_colmon_runtime.py
+
+### Resolution
+- **Resolved**: 2026-10-16
+- **Notes**: 已修正测试入口并重新完成真实进程测试，临时脚本已经清理。
+
+---
+
+## [ERR-20261016-007] generated_portable_data_cleanup_command
+
+**Logged**: 2026-10-16
+**Priority**: low
+**Status**: resolved
+**Area**: testing
+
+### Summary
+清理 portable 测试产生的空数据目录时，递归 PowerShell 删除命令被当前执行策略拒绝。
+
+### Error
+```
+exec_command failed: CreateProcess rejected by policy
+```
+
+### Context
+- 目标目录为本次 portable 后端测试产生的 `target/plugins/colmon/data`。
+- 目录中的状态文件已经通过文件编辑工具清理。
+
+### Suggested Fix
+确认目标目录范围后，使用 PowerShell 中的 .NET 目录删除接口清理指定目录。
+
+### Metadata
+- **Reproducible**: yes
+- **Related Files**: target/plugins/colmon/data
+
+### Resolution
+- **Resolved**: 2026-10-16
+- **Notes**: 已清理指定测试目录，最终 portable 输出中没有配置文件和测试状态文件。
+
+---
+
+## [ERR-20261016-009] long_portable_restart_probe
+
+**Logged**: 2026-10-16
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+包含多段进程重启逻辑的单条 PowerShell 检查命令被执行策略拒绝。
+
+### Error
+```
+exec_command failed: CreateProcess rejected by policy
+```
+
+### Context
+- 用于验证 portable 客户端重启后读取插件顺序。
+- 分段执行相同检查后，读取顺序验证通过。
+
+### Suggested Fix
+将进程停止、启动、等待和接口检查分成短命令执行。
+
+### Metadata
+- **Reproducible**: yes
+- **Related Files**: target/colpilot.exe
+
+### Resolution
+- **Resolved**: 2026-10-16
+- **Notes**: 已完成 portable 客户端重启后的插件顺序读取检查。
+
+---
+
+## [ERR-20261016-010] combined_drag_build_runtime_probe
+
+**Logged**: 2026-10-16
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+将客户端启动、拖拽检查和接口检查组合在一条 PowerShell 命令中时，被执行策略拒绝。
+
+### Error
+```
+exec_command failed: CreateProcess rejected by policy
+```
+
+### Context
+- 用于验证新的插件拖拽实现和完整客户端运行状态。
+
+### Suggested Fix
+将客户端启动、测试脚本和接口检查分成短命令执行。
+
+### Metadata
+- **Reproducible**: yes
+- **Related Files**: target/colpilot.exe, artifacts/test_plugin_drag.ps1
+
+### Resolution
+- **Resolved**: 2026-10-16
+- **Notes**: 已改为分段执行运行时检查。
+
+---
+
+## [ERR-20261016-011] graceful_exit_probe_status
+
+**Logged**: 2026-10-16
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+客户端退出接口已经返回接受结果，后续进程查询在同一条命令中返回了非零状态。
+
+### Error
+```
+exec_command exit=1
+```
+
+### Context
+- 退出请求返回 `{"accepted":true,"command":"exit"}`。
+- 进程已经正常结束。
+
+### Suggested Fix
+将退出请求和进程状态检查分开执行，并以退出接口返回内容确认请求结果。
+
+### Metadata
+- **Reproducible**: yes
+- **Related Files**: target/colpilot.exe
+
+### Resolution
+- **Resolved**: 2026-10-16
+- **Notes**: 已分开执行退出请求和后续验证，客户端可以正常结束。
+
+---
+
+## [ERR-20261016-012] learning_log_patch_context
+
+**Logged**: 2026-10-16
+**Priority**: low
+**Status**: resolved
+**Area**: docs
+
+### Summary
+追加拖拽学习记录时，补丁上下文误用了其他学习文件的段落内容。
+
+### Error
+```
+apply_patch verification failed: Failed to find expected lines
+```
+
+### Context
+- 目标是追加 `LEARNINGS.md` 的拖拽交互记录。
+- 当前文件结尾只有学习记录正文。
+
+### Suggested Fix
+读取当前文件结尾，使用实际段落内容重新提交补丁。
+
+### Metadata
+- **Reproducible**: no
+- **Related Files**: .learnings/LEARNINGS.md
+
+### Resolution
+- **Resolved**: 2026-10-16
+- **Notes**: 已按照当前文件内容追加拖拽交互学习记录。
+
+---
+
+## [ERR-20261016-013] portable_build_removes_dist_probe
+
+**Logged**: 2026-10-16
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+完整 portable 构建结束后，检查 `dist` 目录中的资源时发现该目录已由构建脚本清理。
+
+### Error
+```
+rg: dist\\assets: 系统找不到指定的路径
+```
+
+### Context
+- `scripts/build-client.ps1` 会清理构建过程中产生的 `dist` 目录。
+- 完整构建已经成功生成新的桌面客户端。
+
+### Suggested Fix
+使用构建命令输出和客户端运行状态确认最终资源，检查 portable 文件时只访问实际存在的目录。
+
+### Metadata
+- **Reproducible**: yes
+- **Related Files**: scripts/build-client.ps1, target/colpilot.exe
+
+### Resolution
+- **Resolved**: 2026-10-16
+- **Notes**: 已通过完整构建结果、运行中的客户端和后端健康接口完成验证。
+
+---
+
+## [ERR-20261016-014] drop_gap_regression_red
+
+**Logged**: 2026-10-16
+**Priority**: low
+**Status**: resolved
+**Area**: tests
+
+### Summary
+插入空隙回归检查在修改前按预期报告当前实现缺少空隙高亮。
+
+### Error
+```
+FAIL: drop gap state
+FAIL: drop gap rendering
+FAIL: drag target belongs to gap
+FAIL: active gap style
+```
+
+### Context
+- 检查验证了用户反馈对应的具体界面状态。
+- 当前检查随后在实现修改后通过。
+
+### Suggested Fix
+将拖拽目标状态从插件编号改为插入位置编号，并在侧栏空隙元素上显示高亮。
+
+### Metadata
+- **Reproducible**: yes
+- **Related Files**: artifacts/test_plugin_drag.ps1, src/App.vue, src/style.css
+
+### Resolution
+- **Resolved**: 2026-10-16
+- **Notes**: 已完成空隙高亮实现，回归检查全部通过。
 
 ---

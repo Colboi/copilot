@@ -1,8 +1,11 @@
+use std::ffi::c_void;
+use std::mem::size_of;
 use std::os::windows::process::CommandExt;
+use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{atomic::{AtomicBool, Ordering}, Mutex};
+use std::time::{Duration, Instant};
 
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -10,10 +13,116 @@ use tauri::{AppHandle, Manager, State, WindowEvent};
 
 const BACKEND_PORT: u16 = 37651;
 const CREATE_NO_WINDOW: u32 = 0x08000000;
+const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: u32 = 9;
+const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: u32 = 0x2000;
+
+type WinHandle = *mut c_void;
+
+#[repr(C)]
+#[derive(Default)]
+struct JobObjectBasicLimitInformation {
+    per_process_user_time_limit: i64,
+    per_job_user_time_limit: i64,
+    limit_flags: u32,
+    minimum_working_set_size: usize,
+    maximum_working_set_size: usize,
+    active_process_limit: u32,
+    affinity: usize,
+    priority_class: u32,
+    scheduling_class: u32,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct IoCounters {
+    read_operation_count: u64,
+    write_operation_count: u64,
+    other_operation_count: u64,
+    read_transfer_count: u64,
+    write_transfer_count: u64,
+    other_transfer_count: u64,
+}
+
+#[repr(C)]
+#[derive(Default)]
+struct JobObjectExtendedLimitInformation {
+    basic_limit_information: JobObjectBasicLimitInformation,
+    io_info: IoCounters,
+    process_memory_limit: usize,
+    job_memory_limit: usize,
+    peak_job_memory_used: usize,
+    peak_process_memory_used: usize,
+}
+
+#[link(name = "kernel32")]
+unsafe extern "system" {
+    fn CreateJobObjectW(attributes: *mut c_void, name: *const u16) -> WinHandle;
+    fn SetInformationJobObject(
+        job: WinHandle,
+        information_class: u32,
+        information: *mut c_void,
+        information_length: u32,
+    ) -> i32;
+    fn AssignProcessToJobObject(job: WinHandle, process: WinHandle) -> i32;
+    fn CloseHandle(handle: WinHandle) -> i32;
+}
+
+struct JobObject {
+    handle: WinHandle,
+}
+
+unsafe impl Send for JobObject {}
+unsafe impl Sync for JobObject {}
+
+impl JobObject {
+    fn attach(child: &Child) -> Result<Self, Box<dyn std::error::Error>> {
+        let handle = unsafe { CreateJobObjectW(std::ptr::null_mut(), std::ptr::null()) };
+        if handle.is_null() {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let job = Self { handle };
+        let mut information = JobObjectExtendedLimitInformation::default();
+        information.basic_limit_information.limit_flags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        let configured = unsafe {
+            SetInformationJobObject(
+                job.handle,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                (&mut information as *mut JobObjectExtendedLimitInformation).cast(),
+                size_of::<JobObjectExtendedLimitInformation>() as u32,
+            )
+        };
+        if configured == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let assigned = unsafe {
+            AssignProcessToJobObject(job.handle, child.as_raw_handle() as WinHandle)
+        };
+        if assigned == 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        Ok(job)
+    }
+}
+
+impl Drop for JobObject {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe {
+                CloseHandle(self.handle);
+            }
+        }
+    }
+}
+
+struct BackendProcess {
+    child: Child,
+    _job: JobObject,
+}
 
 struct BackendState {
-    child: Mutex<Option<Child>>,
+    child: Mutex<Option<BackendProcess>>,
     port: u16,
+    shutdown_requested: AtomicBool,
 }
 
 fn tray_icon() -> tauri::image::Image<'static> {
@@ -38,7 +147,7 @@ fn show_main_window(app: &AppHandle) {
     }
 }
 
-fn start_backend(app: &AppHandle) -> Result<Child, Box<dyn std::error::Error>> {
+fn start_backend(app: &AppHandle) -> Result<BackendProcess, Box<dyn std::error::Error>> {
     let project_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .ok_or("Project root is unavailable")?
@@ -50,6 +159,11 @@ fn start_backend(app: &AppHandle) -> Result<Child, Box<dyn std::error::Error>> {
 
     let source_backend_script = project_root.join("backend").join("main.py");
     let portable_backend_script = executable_root.join("backend").join("main.py");
+    let config_path = if cfg!(debug_assertions) {
+        project_root.join("config.ini")
+    } else {
+        executable_root.join("config.ini")
+    };
     let backend_script = if cfg!(debug_assertions) {
         source_backend_script.clone()
     } else if portable_backend_script.exists() {
@@ -93,6 +207,8 @@ fn start_backend(app: &AppHandle) -> Result<Child, Box<dyn std::error::Error>> {
         .arg(backend_script)
         .arg("--port")
         .arg(BACKEND_PORT.to_string())
+        .arg("--config-path")
+        .arg(config_path)
         .current_dir(working_root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -109,7 +225,16 @@ fn start_backend(app: &AppHandle) -> Result<Child, Box<dyn std::error::Error>> {
         command.env("PATH", std::env::join_paths(path_entries)?);
     }
 
-    Ok(command.spawn()?)
+    let mut child = command.spawn()?;
+    let job = match JobObject::attach(&child) {
+        Ok(job) => job,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
+    Ok(BackendProcess { child, _job: job })
 }
 
 fn request_backend_exit(port: u16) {
@@ -129,13 +254,35 @@ fn request_backend_exit(port: u16) {
 }
 
 fn stop_backend(state: &BackendState) {
-    let mut child_slot = state.child.lock().expect("Backend state lock is poisoned");
-    if let Some(mut child) = child_slot.take() {
-        if let Err(error) = child.kill() {
-            eprintln!("Backend process termination failed: {error}");
-        }
-        if let Err(error) = child.wait() {
-            eprintln!("Backend process wait failed: {error}");
+    let process = {
+        let mut process_slot = state.child.lock().expect("Backend state lock is poisoned");
+        process_slot.take()
+    };
+    if let Some(mut process) = process {
+        let deadline = Instant::now() + Duration::from_secs(4);
+        loop {
+            match process.child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Ok(None) => {
+                    eprintln!("Backend graceful shutdown timed out");
+                    if let Err(error) = process.child.kill() {
+                        eprintln!("Backend process termination failed: {error}");
+                    }
+                    let _ = process.child.wait();
+                    break;
+                }
+                Err(error) => {
+                    eprintln!("Backend process status check failed: {error}");
+                    if let Err(kill_error) = process.child.kill() {
+                        eprintln!("Backend process termination failed: {kill_error}");
+                    }
+                    let _ = process.child.wait();
+                    break;
+                }
+            }
         }
     }
 }
@@ -147,7 +294,7 @@ fn monitor_backend(app: AppHandle) {
             let mut child_slot = state.child.lock().expect("Backend state lock is poisoned");
 
             match child_slot.as_mut() {
-                Some(child) => match child.try_wait() {
+                Some(process) => match process.child.try_wait() {
                     Ok(Some(status)) => {
                         eprintln!("Backend process exited with status: {status}");
                         child_slot.take();
@@ -175,6 +322,9 @@ fn monitor_backend(app: AppHandle) {
 
 fn shutdown_app(app: &AppHandle) {
     let state = app.state::<BackendState>();
+    if state.shutdown_requested.swap(true, Ordering::AcqRel) {
+        return;
+    }
     request_backend_exit(state.port);
     stop_backend(&state);
     app.exit(0);
@@ -198,6 +348,7 @@ pub fn run() {
             app.manage(BackendState {
                 child: Mutex::new(Some(backend)),
                 port: BACKEND_PORT,
+                shutdown_requested: AtomicBool::new(false),
             });
             monitor_backend(app.handle().clone());
 

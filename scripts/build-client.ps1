@@ -1,31 +1,59 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $projectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $outputRoot = Join-Path $projectRoot 'target'
+$portableRoot = Join-Path $outputRoot 'Colpilot'
 $releaseRoot = Join-Path $projectRoot 'src-tauri\target\release'
 $runtimeSource = Join-Path $projectRoot '.venv'
 $runtimeBuilderPython = Join-Path $runtimeSource 'Scripts\python.exe'
 $pluginSourceRoot = Join-Path $projectRoot 'plugins'
-$colmonNativeProject = Join-Path $projectRoot 'plugins\colmon\native\ColpilotColmonWindows.csproj'
-$colmonNativePublishRoot = Join-Path $projectRoot 'artifacts\colmon-native-publish'
-$colmonNativeExecutable = Join-Path $colmonNativePublishRoot 'ColpilotColmonWindows.exe'
-$hasLocalColmon = Test-Path -LiteralPath $colmonNativeProject -PathType Leaf
-$pluginSourceDirectories = @(
-    Get-ChildItem -LiteralPath $pluginSourceRoot -Directory |
-        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'manifest.json') }
-)
 $pluginPackageInitSource = Join-Path $pluginSourceRoot '__init__.py'
 $backendScriptSource = Join-Path $projectRoot 'backend\main.py'
 $backendConfigStoreSource = Join-Path $projectRoot 'backend\user_config.py'
 $backendProcessManagerSource = Join-Path $projectRoot 'backend\process_manager.py'
+$backendPluginManagerSource = Join-Path $projectRoot 'backend\plugin_manager.py'
+$backendPluginRuntimeSource = Join-Path $projectRoot 'backend\plugin_runtime.py'
+$backendSettingsSource = Join-Path $projectRoot 'backend\settings.py'
 $backendRequirementsSource = Join-Path $projectRoot 'backend\requirements.txt'
-$portableBackendRoot = Join-Path $outputRoot 'backend'
-$portableRuntimeRoot = Join-Path $outputRoot 'runtime'
-$portablePluginsRoot = Join-Path $outputRoot 'plugins'
+$portableBackendRoot = Join-Path $portableRoot 'backend'
+$portableRuntimeRoot = Join-Path $portableRoot 'runtime'
+$portablePluginsRoot = Join-Path $portableRoot 'plugins'
+
+function Copy-PluginFiles {
+    param(
+        [string]$SourceRoot,
+        [string]$DestinationRoot,
+        [string]$RelativeRoot = ''
+    )
+
+    New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
+    foreach ($item in (Get-ChildItem -LiteralPath $SourceRoot -Force)) {
+        $relativePath = if ($RelativeRoot) { "$RelativeRoot/$($item.Name)" } else { $item.Name }
+        if ($item.Name -in @('.git', '.learnings', '.vscode', '__pycache__', 'data', 'node_modules', '.venv')) {
+            continue
+        }
+        if ($relativePath -in @('native/bin', 'native/obj', 'native/publish')) {
+            continue
+        }
+        if ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            throw "插件发布文件不能包含链接：$($item.FullName)"
+        }
+        $destination = Join-Path $DestinationRoot $item.Name
+        if ($item.PSIsContainer) {
+            Copy-PluginFiles -SourceRoot $item.FullName -DestinationRoot $destination -RelativeRoot $relativePath
+        } elseif (
+            $item.Name -notin @('config.ini', 'settings.json', 'AGENTS.md', 'CLAUDE.md', '.gitignore', '.gitattributes') -and
+            $item.Name -notlike '.env*' -and
+            $item.Extension -notin @('.pyc', '.pyo', '.log', '.tmp')
+        ) {
+            Copy-Item -LiteralPath $item.FullName -Destination $destination
+        }
+    }
+}
 
 Set-Location -LiteralPath $projectRoot
-npm run tauri build
+& (Join-Path $projectRoot 'node_modules\.bin\tauri.cmd') build --no-bundle
 if ($LASTEXITCODE -ne 0) {
     throw "客户端构建失败，退出代码为 $LASTEXITCODE"
 }
@@ -70,6 +98,9 @@ $portableSources = @(
     $backendScriptSource,
     $backendConfigStoreSource,
     $backendProcessManagerSource,
+    $backendPluginManagerSource,
+    $backendPluginRuntimeSource,
+    $backendSettingsSource,
     $backendRequirementsSource,
     (Join-Path $baseRuntimeRoot 'python.exe'),
     (Join-Path $baseRuntimeRoot 'pythonw.exe'),
@@ -77,37 +108,12 @@ $portableSources = @(
     $baseRuntimeDllRoot,
     $venvSitePackages,
     $portableLibraryDllSources,
-    $pluginPackageInitSource,
-    $pluginSourceDirectories.FullName
+    $pluginPackageInitSource
 )
-if ($hasLocalColmon) {
-    $portableSources += $colmonNativeProject
-}
 
 foreach ($sourcePath in @($artifactSources + $portableSources)) {
     if (-not (Test-Path -LiteralPath $sourcePath)) {
         throw "客户端文件不存在：$sourcePath"
-    }
-}
-
-if ($hasLocalColmon) {
-    if (Test-Path -LiteralPath $colmonNativePublishRoot) {
-        Remove-Item -LiteralPath $colmonNativePublishRoot -Recurse -Force
-    }
-    New-Item -ItemType Directory -Path $colmonNativePublishRoot -Force | Out-Null
-    & dotnet publish $colmonNativeProject `
-        -c Release `
-        -r win-x64 `
-        --self-contained true `
-        -p:PublishSingleFile=true `
-        -p:IncludeNativeLibrariesForSelfExtract=true `
-        -o $colmonNativePublishRoot `
-        --nologo
-    if ($LASTEXITCODE -ne 0) {
-        throw "colmon 原生窗口宿主构建失败，退出代码为 $LASTEXITCODE"
-    }
-    if (-not (Test-Path -LiteralPath $colmonNativeExecutable -PathType Leaf)) {
-        throw "colmon 原生窗口宿主文件不存在：$colmonNativeExecutable"
     }
 }
 
@@ -117,12 +123,15 @@ if (Test-Path -LiteralPath $outputRoot) {
     New-Item -ItemType Directory -Path $outputRoot -Force | Out-Null
 }
 
-Copy-Item -LiteralPath $artifactSources[0] -Destination (Join-Path $outputRoot 'colpilot.exe')
-New-Item -ItemType Directory -Path $portableBackendRoot,$portableRuntimeRoot,$portablePluginsRoot -Force | Out-Null
+New-Item -ItemType Directory -Path $portableRoot,$portableBackendRoot,$portableRuntimeRoot,$portablePluginsRoot -Force | Out-Null
+Copy-Item -LiteralPath $artifactSources[0] -Destination (Join-Path $portableRoot 'colpilot.exe')
 
 Copy-Item -LiteralPath $backendScriptSource -Destination (Join-Path $portableBackendRoot 'main.py')
 Copy-Item -LiteralPath $backendConfigStoreSource -Destination (Join-Path $portableBackendRoot 'user_config.py')
 Copy-Item -LiteralPath $backendProcessManagerSource -Destination (Join-Path $portableBackendRoot 'process_manager.py')
+Copy-Item -LiteralPath $backendPluginManagerSource -Destination (Join-Path $portableBackendRoot 'plugin_manager.py')
+Copy-Item -LiteralPath $backendPluginRuntimeSource -Destination (Join-Path $portableBackendRoot 'plugin_runtime.py')
+Copy-Item -LiteralPath $backendSettingsSource -Destination (Join-Path $portableBackendRoot 'settings.py')
 Copy-Item -LiteralPath $backendRequirementsSource -Destination (Join-Path $portableBackendRoot 'requirements.txt')
 foreach ($runtimeFile in (Get-ChildItem -LiteralPath $baseRuntimeRoot -Filter '*.dll' -File)) {
     Copy-Item -LiteralPath $runtimeFile.FullName -Destination $portableRuntimeRoot -Force
@@ -146,56 +155,32 @@ foreach ($sitePackageItem in (Get-ChildItem -LiteralPath $venvSitePackages -Forc
     Copy-Item -LiteralPath $sitePackageItem.FullName -Destination $portableSitePackagesRoot -Recurse -Force
 }
 Copy-Item -LiteralPath $pluginPackageInitSource -Destination (Join-Path $portablePluginsRoot '__init__.py')
+Copy-Item -LiteralPath (Join-Path $projectRoot 'README.md') -Destination $portableRoot
 
-function Copy-PortablePlugin {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$SourcePath,
-        [Parameter(Mandatory = $true)]
-        [string]$DestinationPath
-    )
-
-    New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
-    foreach ($item in Get-ChildItem -LiteralPath $SourcePath -Force) {
-        if ($item.Name -in @(
-            '.git',
-            '.gitignore',
-            '__pycache__',
-            'AGENTS.md',
-            'README.md',
-            'data',
-            'settings.json',
-            'config.json',
-            'config.ini',
-            'native'
-        )) {
-            continue
-        }
-        if ($item.Name -like '*.log' -or $item.Name -like '*.pyc') {
-            continue
-        }
-
-        $destinationItem = Join-Path $DestinationPath $item.Name
-        if ($item.PSIsContainer) {
-            Copy-PortablePlugin -SourcePath $item.FullName -DestinationPath $destinationItem
-        } else {
-            Copy-Item -LiteralPath $item.FullName -Destination $destinationItem -Force
-        }
+foreach ($pluginDirectory in (Get-ChildItem -LiteralPath $pluginSourceRoot -Directory)) {
+    $manifestPath = Join-Path $pluginDirectory.FullName 'manifest.json'
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
+        continue
     }
+    $manifest = Get-Content -LiteralPath $manifestPath -Encoding UTF8 -Raw | ConvertFrom-Json
+    if ($manifest.id -ne $pluginDirectory.Name) {
+        throw "插件标识与目录名称不一致：$manifestPath"
+    }
+    Copy-PluginFiles -SourceRoot $pluginDirectory.FullName -DestinationRoot (Join-Path $portablePluginsRoot $pluginDirectory.Name)
 }
 
-foreach ($pluginSourceDirectory in $pluginSourceDirectories) {
-    Copy-PortablePlugin `
-        -SourcePath $pluginSourceDirectory.FullName `
-        -DestinationPath (Join-Path $portablePluginsRoot $pluginSourceDirectory.Name)
-}
-
-if ($hasLocalColmon) {
-    $portableColmonNativeRoot = Join-Path $portablePluginsRoot 'colmon\native'
-    New-Item -ItemType Directory -Path $portableColmonNativeRoot -Force | Out-Null
-    Copy-Item -LiteralPath $colmonNativeExecutable `
-        -Destination (Join-Path $portableColmonNativeRoot 'ColpilotColmonWindows.exe') `
-        -Force
+$colmonProject = Join-Path $pluginSourceRoot 'colmon\native\ColpilotColmonWindows.csproj'
+if (Test-Path -LiteralPath $colmonProject -PathType Leaf) {
+    $dotnetProgram = (Get-Command dotnet -ErrorAction Stop).Source
+    $colmonPublishRoot = Join-Path $portablePluginsRoot 'colmon\native\publish'
+    & $dotnetProgram publish $colmonProject --configuration Release --runtime win-x64 --self-contained true --disable-build-servers --nologo -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true --output $colmonPublishRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "colmon 窗口宿主构建失败，退出代码为 $LASTEXITCODE"
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $colmonPublishRoot 'ColpilotColmonWindows.exe') -PathType Leaf)) {
+        throw 'colmon 发布目录缺少窗口宿主程序'
+    }
+    Get-ChildItem -LiteralPath $colmonPublishRoot -File -Filter '*.pdb' | Remove-Item -Force
 }
 
 $portablePythonCacheDirectories = @(
@@ -213,21 +198,21 @@ foreach ($cacheFile in $portablePythonCacheFiles) {
 }
 
 $legacyColmonFiles = @(
-    Get-ChildItem -LiteralPath $outputRoot -File -Recurse -Force |
+    Get-ChildItem -LiteralPath $portableRoot -File -Recurse -Force |
         Where-Object { $_.Name -in @('Colmon.exe', 'colmon.ico') }
 )
 if ($legacyColmonFiles.Count -gt 0) {
     $legacyColmonPaths = $legacyColmonFiles.FullName -join ', '
-    throw "portable 客户端不应包含旧的 Colmon 运行文件：$legacyColmonPaths"
+    throw "发布目录包含旧的 Colmon 运行文件：$legacyColmonPaths"
 }
 
 $portableConfigFiles = @(
-    Get-ChildItem -LiteralPath $outputRoot -File -Recurse -Force |
+    Get-ChildItem -LiteralPath $portableRoot -File -Recurse -Force |
         Where-Object { $_.Name -eq 'config.ini' }
 )
 if ($portableConfigFiles.Count -gt 0) {
     $configPaths = $portableConfigFiles.FullName -join ', '
-    throw "portable 客户端不应包含配置文件：$configPaths"
+    throw "发布目录包含个人配置文件：$configPaths"
 }
 
 foreach ($generatedPath in @(
@@ -245,6 +230,6 @@ foreach ($generatedPath in @(
     }
 }
 
-$targetFiles = @(Get-ChildItem -LiteralPath $outputRoot -Recurse -File)
+$targetFiles = @(Get-ChildItem -LiteralPath $portableRoot -Recurse -File)
 $targetSize = ($targetFiles | Measure-Object -Property Length -Sum).Sum
-Write-Output ("portable 客户端已经生成：{0} 个文件，{1} MB" -f $targetFiles.Count, [math]::Round($targetSize / 1MB, 1))
+Write-Output ("Colpilot 已经生成：{0} 个文件，{1} MB，目录：{2}" -f $targetFiles.Count, [math]::Round($targetSize / 1MB, 1), $portableRoot)

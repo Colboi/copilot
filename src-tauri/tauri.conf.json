@@ -19,6 +19,8 @@
         "minWidth": 960,
         "minHeight": 640,
         "visible": true,
+        "decorations": false,
+        "shadow": true,
         "resizable": true
       }
     ],
@@ -35,8 +37,10 @@
       "../backend/main.py",
       "../backend/user_config.py",
       "../backend/process_manager.py",
-      "../backend/requirements.txt",
-      "../plugins"
+      "../backend/plugin_manager.py",
+      "../backend/plugin_runtime.py",
+      "../backend/settings.py",
+      "../backend/requirements.txt"
     ]
   }
 }

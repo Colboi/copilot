@@ -1,8 +1,11 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 
 import { pluginViews } from './plugin-views.js'
+import SettingsPanel from './SettingsPanel.vue'
+import WindowTitleBar from './WindowTitleBar.vue'
+import { appearanceCssVariables, DEFAULT_APPEARANCE } from './theme.js'
 
 const plugins = ref([])
 const selectedPluginId = ref(null)
@@ -12,6 +15,9 @@ const busyPluginId = ref(null)
 const draggingPluginId = ref(null)
 const dropGapIndex = ref(null)
 const reordering = ref(false)
+const settingsOpen = ref(false)
+const appearance = ref({ ...DEFAULT_APPEARANCE })
+const appearanceStyle = computed(() => appearanceCssVariables(appearance.value))
 let backendUrl = null
 let pluginRefreshTimer = null
 let pendingPluginDrag = null
@@ -32,7 +38,13 @@ async function requestBackend(path, options = {}) {
   const headers = {
     ...(options.headers ?? {}),
   }
-  if (options.body !== undefined && headers['Content-Type'] === undefined && headers['content-type'] === undefined) {
+  const isFormDataBody = typeof FormData !== 'undefined' && options.body instanceof FormData
+  if (
+    options.body !== undefined
+    && !isFormDataBody
+    && headers['Content-Type'] === undefined
+    && headers['content-type'] === undefined
+  ) {
     headers['Content-Type'] = 'application/json'
   }
 
@@ -70,6 +82,11 @@ async function loadPlugins() {
   } else if (!plugins.value.some((plugin) => plugin.id === selectedPluginId.value)) {
     selectedPluginId.value = plugins.value[0].id
   }
+}
+
+async function loadSettings() {
+  const settings = await requestBackend('/api/settings')
+  appearance.value = { ...DEFAULT_APPEARANCE, ...settings.appearance }
 }
 
 async function refreshPlugins() {
@@ -295,12 +312,19 @@ async function togglePlugin(plugin) {
   }
 }
 
+function handleAppearanceChanged(nextAppearance) {
+  appearance.value = { ...DEFAULT_APPEARANCE, ...nextAppearance }
+}
+
 onMounted(async () => {
   try {
     await resolveBackendUrl()
     await waitForBackend()
-    await loadPlugins()
     pluginRefreshTimer = window.setInterval(refreshPlugins, 2000)
+    await Promise.all([
+      loadPlugins().finally(() => { loading.value = false }),
+      loadSettings(),
+    ])
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : String(error)
   } finally {
@@ -317,11 +341,21 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="app-shell">
+  <div class="app-shell" :style="appearanceStyle">
+    <WindowTitleBar />
+    <div class="app-layout">
     <aside class="sidebar">
       <div class="sidebar-header">
         <h1 class="app-title">Colpilot</h1>
-        <button class="settings-button" type="button" title="设置" aria-label="设置">⚙</button>
+        <button
+          class="settings-button"
+          type="button"
+          title="设置"
+          aria-label="设置"
+          @click="settingsOpen = true"
+        >
+          ⚙
+        </button>
       </div>
 
       <nav class="sidebar-nav" aria-label="插件管理">
@@ -344,10 +378,15 @@ onBeforeUnmount(() => {
             @pointerdown="startPluginPointerDrag(plugin.id, $event)"
             @click="handlePluginClick(plugin, $event)"
           >
-            <span class="plugin-nav-icon" :style="{ '--plugin-color': plugin.color }">{{ plugin.icon }}</span>
+            <span
+              v-if="plugin.icon"
+              class="plugin-nav-icon"
+              :style="{ '--plugin-color': plugin.color }"
+            >
+              {{ plugin.icon }}
+            </span>
             <span class="nav-item-label">{{ plugin.name }}</span>
             <span
-              v-if="plugin.tool_type === 'continuous'"
               class="nav-runtime-status"
               :class="`is-${plugin.runtime?.status ?? 'stopped'}`"
               :title="plugin.runtime?.detail ?? '工具未运行'"
@@ -391,7 +430,13 @@ onBeforeUnmount(() => {
               :class="{ 'is-disabled': !plugin.enabled, 'is-focused': plugin.id === selectedPluginId }"
             >
               <div class="card-topline">
-                <span class="plugin-icon" :style="{ '--plugin-color': plugin.color }">{{ plugin.icon }}</span>
+                <span
+                  v-if="plugin.icon"
+                  class="plugin-icon"
+                  :style="{ '--plugin-color': plugin.color }"
+                >
+                  {{ plugin.icon }}
+                </span>
                 <span class="plugin-category">{{ plugin.category }}</span>
                 <span class="enabled-pill" :class="{ 'is-disabled': !plugin.enabled }">
                   {{ plugin.enabled ? '已启用' : '已停用' }}
@@ -401,8 +446,25 @@ onBeforeUnmount(() => {
               <p class="plugin-description">{{ plugin.description }}</p>
 
               <div class="plugin-card-view">
+                <div
+                  v-if="plugin.enabled && !plugin.backend_ready && plugin.runtime?.status === 'error'"
+                  class="plugin-runtime-state is-error"
+                  role="alert"
+                >
+                  <strong>插件启动或运行失败</strong>
+                  <span>{{ plugin.runtime.detail }}</span>
+                </div>
+                <div
+                  v-else-if="plugin.enabled && (!plugin.backend_ready || ['starting', 'stopping'].includes(plugin.runtime?.status))"
+                  class="plugin-runtime-state"
+                  role="status"
+                >
+                  <div class="loader"></div>
+                  <strong>{{ plugin.runtime?.status === 'stopping' ? '正在停止插件' : '正在启动插件' }}</strong>
+                  <span>{{ plugin.runtime?.detail }}</span>
+                </div>
                 <component
-                  v-if="plugin.enabled && pluginViews[plugin.view]"
+                  v-else-if="plugin.enabled && pluginViews[plugin.view]"
                   :is="pluginViews[plugin.view]"
                   :plugin="plugin"
                   :request-backend="requestBackend"
@@ -432,5 +494,13 @@ onBeforeUnmount(() => {
         </div>
       </section>
     </main>
+    </div>
+
+    <SettingsPanel
+      v-if="settingsOpen"
+      :request-backend="requestBackend"
+      @close="settingsOpen = false"
+      @appearance-changed="handleAppearanceChanged"
+    />
   </div>
 </template>

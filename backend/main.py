@@ -1,13 +1,15 @@
 import argparse
 import json
 import sys
+import time
 from contextlib import asynccontextmanager
+from functools import partial
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Literal
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -18,30 +20,29 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from backend.user_config import UserConfigStore
 from backend.process_manager import ManagedProcessRegistry
+from backend.plugin_manager import MAX_PLUGIN_ARCHIVE_BYTES, PluginRepositoryManager
+from backend.plugin_runtime import PluginNotReadyError, PluginRuntime, PluginWorker
+from backend.settings import read_appearance, theme_presets, update_appearance
 
 
 BACKEND_PORT = 37651
+APP_VERSION = '0.1.0'
 PLUGIN_ROOT = PROJECT_ROOT / 'plugins'
 TOOL_TYPES = {'continuous', 'on_demand'}
-
-
-class PluginRuntime(BaseModel):
-    status: Literal['running', 'stopped', 'error']
-    detail: str
-    exit_code: int | None = None
 
 
 class PluginDescriptor(BaseModel):
     id: str
     name: str
     description: str
-    icon: str
+    icon: str | None = None
     category: str
     color: str
     tool_type: Literal['continuous', 'on_demand']
     enabled: bool
     view: str = 'generic'
     runtime: PluginRuntime | None = None
+    backend_ready: bool = False
 
 
 class PluginToggleRequest(BaseModel):
@@ -50,6 +51,14 @@ class PluginToggleRequest(BaseModel):
 
 class PluginOrderRequest(BaseModel):
     order: list[str]
+
+
+class PluginDownloadRequest(BaseModel):
+    repository_url: str
+
+
+class PluginUpdateIntervalRequest(BaseModel):
+    minutes: int
 
 
 class PluginRunRequest(BaseModel):
@@ -75,76 +84,89 @@ def load_plugin_manifests() -> tuple[list[dict[str, object]], dict[str, Path]]:
         tool_type = manifest.get('tool_type')
         if not isinstance(tool_type, str) or tool_type not in TOOL_TYPES:
             raise ValueError(f'Plugin tool_type is invalid: {manifest_path}')
+        icon = manifest.get('icon')
+        if icon is not None and not isinstance(icon, str):
+            raise ValueError(f'Plugin icon is invalid: {manifest_path}')
         plugin_roots[plugin_id] = manifest_path.parent
         manifests.append(manifest)
     return manifests, plugin_roots
 
 
-def load_plugin_handlers(
-    manifests: list[dict[str, object]],
-    plugin_roots: dict[str, Path],
+def load_plugin_handler(
+    manifest: dict[str, object],
+    plugin_root: Path,
     program_config_store: UserConfigStore,
     process_registry: ManagedProcessRegistry,
-) -> dict[str, Any]:
-    handlers: dict[str, Any] = {}
-    for manifest in manifests:
-        plugin_id = manifest['id']
-        backend_entry = manifest.get('backend')
-        if backend_entry is None:
-            raise ValueError(f'Plugin backend entry is missing: {plugin_id}')
-        if not isinstance(plugin_id, str) or not isinstance(backend_entry, str):
-            raise ValueError(f'Plugin backend entry is invalid: {plugin_id}')
-        module_name, separator, factory_name = backend_entry.partition(':')
-        if not separator or not module_name or not factory_name:
-            raise ValueError(f'Plugin backend entry must use module:factory format: {plugin_id}')
-        module = import_module(module_name)
-        factory = getattr(module, factory_name)
-        plugin_config_store = UserConfigStore(plugin_roots[plugin_id] / 'config.ini')
-        plugin_config_store.migrate_section_from(program_config_store, plugin_id)
-        handler = factory(plugin_roots[plugin_id], plugin_config_store, process_registry)
-        required_methods = (
-            ('start', 'stop', 'runtime_status')
-            if manifest['tool_type'] == 'continuous'
-            else ('run',)
+) -> Any:
+    plugin_id = manifest['id']
+    backend_entry = manifest.get('backend')
+    if backend_entry is None:
+        raise ValueError(f'Plugin backend entry is missing: {plugin_id}')
+    if not isinstance(plugin_id, str) or not isinstance(backend_entry, str):
+        raise ValueError(f'Plugin backend entry is invalid: {plugin_id}')
+    module_name, separator, factory_name = backend_entry.partition(':')
+    if not separator or not module_name or not factory_name:
+        raise ValueError(f'Plugin backend entry must use module:factory format: {plugin_id}')
+    module = import_module(module_name)
+    factory = getattr(module, factory_name)
+    plugin_config_store = UserConfigStore(plugin_root / 'config.ini')
+    plugin_config_store.migrate_section_from(program_config_store, plugin_id)
+    handler = factory(plugin_root, plugin_config_store, process_registry)
+    required_methods = (
+        ('start', 'stop', 'runtime_status')
+        if manifest['tool_type'] == 'continuous'
+        else ('run',)
+    )
+    missing_methods = [
+        method_name
+        for method_name in required_methods
+        if not callable(getattr(handler, method_name, None))
+    ]
+    if missing_methods:
+        raise ValueError(
+            f'Plugin handler is missing methods for {plugin_id}: '
+            f'{", ".join(missing_methods)}'
         )
-        missing_methods = [
-            method_name
-            for method_name in required_methods
-            if not callable(getattr(handler, method_name, None))
-        ]
-        if missing_methods:
-            raise ValueError(
-                f'Plugin handler is missing methods for {plugin_id}: '
-                f'{", ".join(missing_methods)}'
-            )
-        handlers[plugin_id] = handler
-    return handlers
+    return handler
 
 
 PLUGIN_DEFINITIONS, PLUGIN_ROOTS = load_plugin_manifests()
-PLUGIN_HANDLERS: dict[str, Any] = {}
+PLUGIN_WORKERS: dict[str, PluginWorker] = {}
 PROGRAM_CONFIG_STORE: UserConfigStore | None = None
+PLUGIN_REPOSITORY_MANAGER: PluginRepositoryManager | None = None
 PLUGIN_PROCESS_REGISTRY = ManagedProcessRegistry()
 enabled_plugins = {plugin['id']: True for plugin in PLUGIN_DEFINITIONS}
 plugin_order = [plugin['id'] for plugin in PLUGIN_DEFINITIONS]
 
 
 def configure_runtime(config_path: Path) -> None:
-    global PLUGIN_HANDLERS, PROGRAM_CONFIG_STORE
+    global PLUGIN_WORKERS, PROGRAM_CONFIG_STORE, PLUGIN_REPOSITORY_MANAGER
     resolved_path = config_path.expanduser().resolve()
     if PROGRAM_CONFIG_STORE is not None and PROGRAM_CONFIG_STORE.path == resolved_path:
         return
+    if PLUGIN_REPOSITORY_MANAGER is not None:
+        PLUGIN_REPOSITORY_MANAGER.stop()
     PROGRAM_CONFIG_STORE = UserConfigStore(resolved_path)
-    PLUGIN_HANDLERS = load_plugin_handlers(
-        PLUGIN_DEFINITIONS,
-        PLUGIN_ROOTS,
-        PROGRAM_CONFIG_STORE,
-        PLUGIN_PROCESS_REGISTRY,
-    )
+    PLUGIN_REPOSITORY_MANAGER = PluginRepositoryManager(PLUGIN_ROOT, PROGRAM_CONFIG_STORE)
     enabled_plugins.clear()
     enabled_plugins.update(_read_enabled_plugins(PROGRAM_CONFIG_STORE))
     plugin_order.clear()
     plugin_order.extend(_read_plugin_order(PROGRAM_CONFIG_STORE))
+    PLUGIN_WORKERS = {
+        plugin['id']: PluginWorker(
+            plugin['id'],
+            partial(
+                load_plugin_handler,
+                plugin,
+                PLUGIN_ROOTS[plugin['id']],
+                PROGRAM_CONFIG_STORE,
+                PLUGIN_PROCESS_REGISTRY,
+            ),
+            continuous=plugin['tool_type'] == 'continuous',
+            enabled=enabled_plugins[plugin['id']],
+        )
+        for plugin in PLUGIN_DEFINITIONS
+    }
 
 
 def _read_enabled_plugins(config_store: UserConfigStore) -> dict[str, bool]:
@@ -216,25 +238,13 @@ configure_runtime(PROJECT_ROOT / 'config.ini')
 
 
 def stop_plugin_handlers() -> None:
-    handlers = [
-        PLUGIN_HANDLERS[plugin['id']]
-        for plugin in reversed(PLUGIN_DEFINITIONS)
-        if plugin['id'] in PLUGIN_HANDLERS
-    ]
-
-    def stop_handler_at(index: int) -> None:
-        if index >= len(handlers):
-            return
-        handler = handlers[index]
-        try:
-            stop_method = getattr(handler, 'stop', None)
-            if callable(stop_method):
-                stop_method()
-        finally:
-            stop_handler_at(index + 1)
-
+    workers = list(PLUGIN_WORKERS.values())
+    for worker in workers:
+        worker.close()
+    deadline = time.monotonic() + 2.0
     try:
-        stop_handler_at(0)
+        for worker in workers:
+            worker.join(deadline - time.monotonic())
     finally:
         PLUGIN_PROCESS_REGISTRY.stop_all()
 
@@ -242,22 +252,20 @@ def stop_plugin_handlers() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     try:
-        for plugin in PLUGIN_DEFINITIONS:
-            if (
-                plugin['tool_type'] != 'continuous'
-                or not enabled_plugins[plugin['id']]
-            ):
-                continue
-            handler = get_plugin_handler(plugin['id'])
-            handler.start()
+        get_plugin_repository_manager().start()
+        for worker in PLUGIN_WORKERS.values():
+            worker.start()
         yield
     finally:
-        stop_plugin_handlers()
+        try:
+            get_plugin_repository_manager().stop()
+        finally:
+            stop_plugin_handlers()
 
 
 app = FastAPI(
     title='Colpilot Backend',
-    version='0.1.0',
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 app.add_middleware(
@@ -286,36 +294,77 @@ def get_plugin_definition(plugin_id: str) -> dict[str, object]:
 def get_plugin_handler(plugin_id: str) -> Any:
     get_plugin_definition(plugin_id)
     try:
-        return PLUGIN_HANDLERS[plugin_id]
-    except KeyError as error:
+        return PLUGIN_WORKERS[plugin_id].get_handler()
+    except PluginNotReadyError as error:
         raise HTTPException(
-            status_code=501,
-            detail=f'Plugin backend is unavailable: {plugin_id}',
+            status_code=503,
+            detail=str(error),
         ) from error
 
 
 def get_plugin_runtime(plugin_id: str) -> PluginRuntime | None:
-    plugin = get_plugin_definition(plugin_id)
-    if plugin['tool_type'] != 'continuous':
-        return None
-    if not enabled_plugins[plugin_id]:
-        return PluginRuntime(status='stopped', detail='工具已停用')
-    handler = get_plugin_handler(plugin_id)
-    return PluginRuntime(**handler.runtime_status())
+    get_plugin_definition(plugin_id)
+    runtime, _ = PLUGIN_WORKERS[plugin_id].snapshot()
+    return runtime
 
 
 def build_plugin_descriptor(plugin_id: str) -> PluginDescriptor:
     plugin = get_plugin_definition(plugin_id)
+    runtime, backend_ready = PLUGIN_WORKERS[plugin_id].snapshot()
     return PluginDescriptor(
         **plugin,
         enabled=enabled_plugins[plugin_id],
-        runtime=get_plugin_runtime(plugin_id),
+        runtime=runtime,
+        backend_ready=backend_ready,
     )
+
+
+def get_plugin_repository_manager() -> PluginRepositoryManager:
+    if PLUGIN_REPOSITORY_MANAGER is None:
+        raise RuntimeError('插件管理器尚未初始化')
+    return PLUGIN_REPOSITORY_MANAGER
 
 
 @app.get('/api/health')
 def health() -> dict[str, str]:
     return {'status': 'ok', 'service': 'colpilot-backend'}
+
+
+@app.get('/api/settings')
+def get_settings() -> dict[str, object]:
+    if PROGRAM_CONFIG_STORE is None:
+        raise RuntimeError('Program config store is not ready')
+    manager = get_plugin_repository_manager()
+    return {
+        'appearance': read_appearance(PROGRAM_CONFIG_STORE),
+        'themes': theme_presets(),
+        'plugin_update_interval_minutes': manager.get_update_interval(),
+        'about': {
+            'author': 'Colboi',
+            'version': APP_VERSION,
+        },
+    }
+
+
+@app.post('/api/settings/appearance')
+def save_appearance(settings: dict[str, object]) -> dict[str, object]:
+    if PROGRAM_CONFIG_STORE is None:
+        raise RuntimeError('Program config store is not ready')
+    try:
+        appearance = update_appearance(PROGRAM_CONFIG_STORE, settings)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {'appearance': appearance, 'themes': theme_presets()}
+
+
+@app.post('/api/settings/plugin-update-interval')
+def save_plugin_update_interval(request: PluginUpdateIntervalRequest) -> dict[str, int]:
+    manager = get_plugin_repository_manager()
+    try:
+        minutes = manager.set_update_interval(request.minutes)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {'plugin_update_interval_minutes': minutes}
 
 
 @app.get('/api/plugins', response_model=list[PluginDescriptor])
@@ -339,6 +388,52 @@ def update_plugin_order(request: PluginOrderRequest) -> list[PluginDescriptor]:
     plugin_order.clear()
     plugin_order.extend(next_order)
     return list_plugins()
+
+
+@app.get('/api/plugins/installed')
+def list_installed_plugins() -> list[dict[str, object]]:
+    return get_plugin_repository_manager().list_installed()
+
+
+@app.post('/api/plugins/check-updates')
+def check_plugin_updates() -> list[dict[str, object]]:
+    return get_plugin_repository_manager().check_updates()
+
+
+@app.post('/api/plugins/download')
+def download_plugin(request: PluginDownloadRequest) -> dict[str, object]:
+    try:
+        result = get_plugin_repository_manager().install_from_github_url(
+            request.repository_url
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {
+        **result,
+        'installed': get_plugin_repository_manager().list_installed(),
+    }
+
+
+@app.post('/api/plugins/import-zip')
+async def import_plugin_zip(file: UploadFile = File(...)) -> dict[str, object]:
+    if not file.filename:
+        raise HTTPException(status_code=422, detail='插件 ZIP 文件名称不能为空')
+    try:
+        archive = await file.read(MAX_PLUGIN_ARCHIVE_BYTES + 1)
+        if len(archive) > MAX_PLUGIN_ARCHIVE_BYTES:
+            raise ValueError('插件压缩包超过 100 MB，无法安装')
+        result = get_plugin_repository_manager().install_from_zip_archive(
+            file.filename,
+            archive,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    finally:
+        await file.close()
+    return {
+        **result,
+        'installed': get_plugin_repository_manager().list_installed(),
+    }
 
 
 @app.get('/api/plugins/{plugin_id}/status')
@@ -389,20 +484,15 @@ def open_plugin_output_directory(plugin_id: str) -> Any:
 
 @app.post('/api/plugins/{plugin_id}/toggle', response_model=PluginDescriptor)
 def toggle_plugin(plugin_id: str, request: PluginToggleRequest) -> PluginDescriptor:
-    plugin = get_plugin_definition(plugin_id)
-    if plugin['tool_type'] == 'continuous':
-        handler = get_plugin_handler(plugin_id)
-        if request.enabled:
-            handler.start()
-        else:
-            handler.stop()
-    enabled_plugins[plugin_id] = request.enabled
+    get_plugin_definition(plugin_id)
     if PROGRAM_CONFIG_STORE is None:
         raise RuntimeError('Program config store is not ready')
     PROGRAM_CONFIG_STORE.update_section(
         'colpilot',
         {f'enabled_{plugin_id}': request.enabled},
     )
+    enabled_plugins[plugin_id] = request.enabled
+    PLUGIN_WORKERS[plugin_id].set_enabled(request.enabled)
     return build_plugin_descriptor(plugin_id)
 
 

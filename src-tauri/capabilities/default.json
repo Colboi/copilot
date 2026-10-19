@@ -3,5 +3,12 @@
   "identifier": "main-capability",
   "description": "Permissions for the main Colpilot window",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "dialog:default"
+  ]
 }
